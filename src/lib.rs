@@ -1,4 +1,4 @@
-#![cfg_attr(not(feature = "std"), no_std)]
+// #![cfg_attr(not(feature = "std"), no_std)]
 
 extern crate delog;
 #[macro_use]
@@ -13,11 +13,16 @@ use hal::prelude::_embedded_hal_blocking_spi_Transfer;
 use hal::prelude::_embedded_hal_blocking_spi_Write;
 
 use command::Command;
-use register::{Register, InterruptFlags};
+use register::{InterruptFlags, Register};
 
-mod picc;
+use crate::consts::MASK_RECEIVE_TIMER;
+use crate::consts::NO_RESPONSE_TIMER;
+
 pub mod command;
+mod consts;
+mod picc;
 pub mod register;
+mod utils;
 
 delog::generate_macros!();
 
@@ -30,7 +35,7 @@ pub enum SPIOrCSError<E, OPE> {
 pub trait SpiWithCustomCS {
     type Spi: spi::Transfer<u8, Error = Self::SpiError> + spi::Write<u8, Error = Self::SpiError>;
     type SpiError;
-    
+
     fn with_cs_low<F, T, CS, OPE>(
         &mut self,
         cs: &mut CS,
@@ -124,6 +129,7 @@ pub struct ST25R3911B<SPICS, CS, INTR, DELAY> {
     /// Interrupt pin
     intr: INTR,
     delay: DELAY,
+    interrupt_mask: u32,
 }
 
 impl<OPE, CS, INTR, SPICS, DELAY> ST25R3911B<SPICS, CS, INTR, DELAY>
@@ -133,100 +139,216 @@ where
     INTR: InputPin<Error = OPE>,
     DELAY: delay::DelayMs<u16>,
 {
-
-    pub fn new(spi_with_custom_cs: SPICS, cs: CS, intr: INTR, delay: DELAY) -> Result<Self, Error<SPICS::SpiError, OPE>> {
+    pub fn new(
+        spi_with_custom_cs: SPICS,
+        cs: CS,
+        intr: INTR,
+        delay: DELAY,
+    ) -> Result<Self, Error<SPICS::SpiError, OPE>> {
         let mut st25r3911b = Self {
             spi_with_custom_cs,
             cs,
             intr,
             delay,
+            interrupt_mask: 0,
         };
-        debug!("New ST25R3911B driver instance");
-        st25r3911b.reset()?;
+        println!("New ST25R3911B driver instance");
+        st25r3911b.initialize_chip()?;
 
+        st25r3911b.check_chip_id()?;
 
-        let identity = st25r3911b.read_register(Register::ICIdentity)?;
+        // Set FIFO Water Levels to be used
+        st25r3911b.modify_register(Register::IOConfiguration1, 0, 0b0011_0000)?;
+
+        // Always have CRC in FIFO upon reception and Enable External Field Detector
+        st25r3911b.modify_register(Register::AuxiliaryRegister, 0, 1 << 6 | 1 << 4)?;
+
+        st25r3911b.calibrate()?;
+
+        Ok(st25r3911b)
+    }
+
+    pub fn initialize_chip(&mut self) -> Result<(), Error<SPICS::SpiError, OPE>> {
+        // reset
+        self.reset()?;
+        // Set Operation Control Register to default value
+        self.write_register(Register::OperationControlRegister, 0)?;
+        // Set power supply 3.3V and enable pull downs on miso line
+        self.write_register(Register::IOConfiguration2, 0b1001_1000)?;
+
+        // after reset all interrupts are enabled. so disable them at first
+        self.disable_interrupts(InterruptFlags::MASK_ALL)?;
+        // and clear them, just to be sure...
+        self.clear_interrupts()?;
+
+        // Turn on Oscillator
+        self.enable_interrupts(InterruptFlags::OSCILLATOR_FREQUENCY_STABLE)?;
+        self.modify_register(Register::OperationControlRegister, 0, 1 << 7)?;
+        self.wait_for_interrupt(InterruptFlags::OSCILLATOR_FREQUENCY_STABLE, 10)?;
+        self.disable_interrupts(InterruptFlags::OSCILLATOR_FREQUENCY_STABLE)?;
+
+        // Make sure Transmitter and Receiver are disabled
+        self.modify_register(Register::OperationControlRegister, 1 << 6 | 1 << 3, 0)?;
+
+        self.check_chip_id()?;
+
+        Ok(())
+    }
+
+    fn check_chip_id(&mut self) -> Result<(), Error<SPICS::SpiError, OPE>> {
+        let identity = self.read_register(Register::ICIdentity)?;
 
         if identity & 0b11111000 != 8 {
             return Err(Error::InvalidDevice);
         }
+        Ok(())
+    }
 
-        // TODO: investigate and write comment
-        // st25r3911b.write_register(Register::RegulatedVoltageDefinition, 0xA8)?;
+    fn calibrate(&mut self) -> Result<(), Error<SPICS::SpiError, OPE>> {
+        self.adjust_regulators()?;
 
-        // st25r3911b.execute_command(Command::CalibrateAntenna)?;
+        // REMARK: Silicon workaround ST25R3911 Errata #1.5
+        // Always run the command Calibrate Antenna twice
+        self.calibrate_antenna()?;
+        self.calibrate_antenna()?;
 
-        // st25r3911b.delay.delay_ms(1);
-        // let val = st25r3911b.read_register(Register::AntennaCalibration)?;
+        // Adjust the regulators again with the Antenna calibrated
+        self.adjust_regulators()?;
 
-        // if val & 0x8 != 0 {
-        //     return Err(Error::AntennaCalibration);
-        // }
-        // // Enables oscillator and regulator
-        // // Enables receiver operation
-        // // Enables RF output
-        // st25r3911b.write_register(Register::OperationControl, 0xD0)?;
+        Ok(())
+    }
 
-        // // PM demodulation
-        // // st25r3911b.write_register(Register::ConfigurationRegister5, 0b1000_0000)?;
-        // st25r3911b.execute_command(Command::Clear)?;
+    fn adjust_regulators(&mut self) -> Result<(), Error<SPICS::SpiError, OPE>> {
+        // Reset logic and set regulated voltages to be defined by result of Adjust Regulators command
+        self.modify_register(Register::RegulatorVoltageControlRegister, 0, 1 << 7)?;
+        self.modify_register(Register::RegulatorVoltageControlRegister, 1 << 7, 0)?;
 
-        // st25r3911b.setup_interrupt_mask(InterruptFlags::END_OF_RECEIVE)?;
+        self.execute_command(Command::AdjustRegulators)?;
+        Ok(())
+    }
 
-        Ok(st25r3911b)
+    fn calibrate_antenna(&mut self) -> Result<(), Error<SPICS::SpiError, OPE>> {
+        self.execute_command(Command::CalibrateAntenna)?;
+        Ok(())
     }
 
     pub fn reset(&mut self) -> Result<(), Error<SPICS::SpiError, OPE>> {
         self.execute_command(Command::SetDefault)
     }
 
-    // /// Sends a REQuest type A to nearby PICCs
-    // pub fn reqa(&mut self) -> Result<Option<AtqA>, Error<SPICS::SpiError, OPE>> {
-    //     info!("reqa");
-    //     self.execute_command(Command::Clear)?;
-    //     self.write_register(Register::ConfigurationRegister3, 0x80)?;
-    //     self.setup_interrupt_mask(InterruptFlags::END_OF_RECEIVE)?;
-    //     self.execute_command(Command::TransmitREQA)?;
+    /// Sends a REQuest type A to nearby PICCs
+    pub fn reqa(&mut self) -> Result<Option<AtqA>, Error<SPICS::SpiError, OPE>> {
+        println!("reqa");
 
-    //     self.wait_for_interrupt(5)?;
+        // Enable anti collision to recognize collision in first byte of SENS_REQ
+        self.modify_register(Register::ISO1443AAndNFC106kbsRegister, 0, 0b0000_0001)?;
 
-    //     let fifo_reg = self.read_register(Register::FIFOStatus)?;
+        // Disable CRC while receiving since ATQA has no CRC included
+        self.modify_register(Register::AuxiliaryRegister, 0, 1 << 7)?;
 
-    //     if fifo_reg >> 2 == 0b00111111 {
-    //         // No PICC in area
-    //         return Ok(None);
-    //     }
-    //     let mut buffer = [0u8; 2];
+        // Set time when RX is not active after transmission
+        self.write_register(
+            Register::MaskReceiveTimerRegister,
+            utils::fc_to_64fc(MASK_RECEIVE_TIMER * 5) as u8,
+        )?;
 
-    //     self.read_fifo(&mut buffer)?;
+        // Set time before it RX should be detected
+        let no_response_timer_fc = utils::fc_to_64fc(NO_RESPONSE_TIMER * 10);
+        self.modify_register(
+            Register::GeneralPurposeAndNoResponseTimerControlRegister,
+            0b0000_0011,
+            0,
+        )?;
 
-    //     Ok(Some(AtqA { bytes: buffer }))
-    // }
+        self.write_register(
+            Register::NoResponseTimerRegister1,
+            (no_response_timer_fc >> 8) as u8,
+        )?;
+        self.write_register(
+            Register::NoResponseTimerRegister2,
+            no_response_timer_fc as u8,
+        )?;
 
-    // /// Sends a Wake UP type A to nearby PICCs
-    // pub fn wupa(&mut self) -> Result<Option<AtqA>, Error<SPICS::SpiError, OPE>> {
-    //     info!("wupa");
-    //     self.setup_interrupt_mask(InterruptFlags::END_OF_RECEIVE)?;
-    //     self.execute_command(Command::TransmitWUPA)?;
+        // Prepare transmission
+        // Clear EMVCo mode
+        self.modify_register(
+            Register::GeneralPurposeAndNoResponseTimerControlRegister,
+            0b0000_0010,
+            0,
+        )?;
+        // Clear FIFO
+        self.execute_command(Command::Clear)?;
+        // Disable all interrupts
+        self.disable_interrupts(InterruptFlags::MASK_ALL)?;
+        // Reset RX Gain
+        self.execute_command(Command::ResetRxGain)?;
+        // End prepare transmission
 
-    //     self.wait_for_interrupt(5)?;
+        let interrupt_flags = InterruptFlags::START_OF_RECEIVE
+            | InterruptFlags::END_OF_RECEIVE
+            | InterruptFlags::END_OF_TRANSMISSION
+            | InterruptFlags::BIT_COLLISION
+            | InterruptFlags::TIMER
+            | InterruptFlags::ERROR
+            | InterruptFlags::NO_RESPONSE_TIMER_EXPIRE
+            | InterruptFlags::GENERAL_TIMER_EXPIRE
+            | InterruptFlags::CRC_ERROR
+            | InterruptFlags::PARITY_ERROR
+            | InterruptFlags::SOFT_FARMING_ERROR
+            | InterruptFlags::HARD_FARMING_ERROR;
 
-    //     let fifo_reg = self.read_register(Register::FIFOStatus)?;
+        // Enable TX and RX interrupts
+        self.enable_interrupts(interrupt_flags)?;
 
-    //     if fifo_reg >> 2 == 0b00111111 {
-    //         // No PICC in area
-    //         return Ok(None);
-    //     }
-    //     let mut buffer = [0u8; 2];
+        // Clear nbtx bits before sending WUPA/REQA - otherwise ST25R3911 will report parity error
+        self.write_register(Register::NumberOfTransmittedBytesRegister2, 0)?;
 
-    //     self.read_fifo(&mut buffer)?;
+        // TODO: Check which command to run
+        self.execute_command(Command::TransmitREQA)?;
 
-    //     Ok(Some(AtqA { bytes: buffer }))
-    // }
+        let intr = self.wait_for_interrupt(interrupt_flags, 10)?;
+
+        println!("intr: 0b{:08b}", intr);
+
+        let fifo_reg = self.read_register(Register::FIFOStatusRegister1)?;
+
+        println!("fifo_reg: 0b{:08b}", fifo_reg);
+
+        if fifo_reg == 0b11111111 {
+            // No PICC in area
+            return Ok(None);
+        }
+        let mut buffer = [0u8; 2];
+
+        self.read_fifo(&mut buffer)?;
+
+        Ok(Some(AtqA { bytes: buffer }))
+    }
+
+    /// Sends a Wake UP type A to nearby PICCs
+    pub fn wupa(&mut self) -> Result<Option<AtqA>, Error<SPICS::SpiError, OPE>> {
+        println!("wupa");
+        // self.setup_interrupt_mask(InterruptFlags::END_OF_RECEIVE)?;
+        // self.execute_command(Command::TransmitWUPA)?;
+
+        // self.wait_for_interrupt(5)?;
+
+        let fifo_reg = self.read_register(Register::FIFOStatusRegister1)?;
+
+        if fifo_reg == 0b11111111 {
+            // No PICC in area
+            return Ok(None);
+        }
+        let mut buffer = [0u8; 2];
+
+        self.read_fifo(&mut buffer)?;
+
+        Ok(Some(AtqA { bytes: buffer }))
+    }
 
     // /// Sends command to enter HALT state
     // pub fn hlta(&mut self) -> Result<(), Error<SPICS::SpiError, OPE>> {
-    //     info!("hlta");
+    //     println!("hlta");
     //     // The standard says:
     //     //   If the PICC responds with any modulation during a period of 1 ms
     //     //   after the end of the frame containing the HLTA command,
@@ -240,7 +362,7 @@ where
     // }
 
     // pub fn select(&mut self) -> Result<Uid, Error<SPICS::SpiError, OPE>> {
-    //     info!("Select");
+    //     println!("Select");
     //     let mut cascade_level: u8 = 0;
     //     let mut uid_bytes: [u8; 10] = [0u8; 10];
     //     let mut uid_idx: usize = 0;
@@ -256,10 +378,10 @@ where
     //         tx[0] = cmd as u8;
     //         let mut anticollision_cycle_counter = 0;
 
-    //         debug!("Select with cascade {}", cascade_level);
+    //         println!("Select with cascade {}", cascade_level);
     //         'anticollision: loop {
     //             anticollision_cycle_counter += 1;
-    //             debug!("Stating anticollision loop nr {} read uid_bytes {:x?}", anticollision_cycle_counter, uid_bytes);
+    //             println!("Stating anticollision loop nr {} read uid_bytes {:x?}", anticollision_cycle_counter, uid_bytes);
 
     //             if anticollision_cycle_counter > 32 {
     //                 return Err(Error::AntiCollisionMaxLoopsReached);
@@ -275,7 +397,7 @@ where
     //             match self.communicate_to_picc::<5>(&tx[0..end], tx_last_bits, true, false) {
     //                 Ok(fifo_data) => {
     //                     fifo_data.copy_bits_to(&mut tx[2..=6], known_bits);
-    //                     debug!("Read full response {:?}", fifo_data);
+    //                     println!("Read full response {:?}", fifo_data);
     //                     break 'anticollision;
     //                 }
     //                 Err(Error::Collision) => {
@@ -292,7 +414,7 @@ where
     //                     }
 
     //                     let fifo_data = self.fifo_data::<5>()?;
-    //                     debug!("Read partial response {:?}", fifo_data);
+    //                     println!("Read partial response {:?}", fifo_data);
 
     //                     fifo_data.copy_bits_to(&mut tx[2..=6], known_bits);
     //                     known_bits = coll_pos;
@@ -355,7 +477,7 @@ where
     //     with_anti_collision: bool,
     //     with_crc: bool,
     // ) -> Result<FifoData<RX>, Error<SPICS::SpiError, OPE>> {
-    //     info!("Communicate to picc {:x?}", tx_buffer);
+    //     println!("Communicate to picc {:x?}", tx_buffer);
     //     self.setup_interrupt_mask(InterruptFlags::END_OF_RECEIVE)?;
 
     //     self.execute_command(Command::Clear)?;
@@ -424,89 +546,180 @@ where
     //     })
     // }
 
-    // pub fn setup_interrupt_mask(&mut self, flags: InterruptFlags) -> Result<u8, Error<SPICS::SpiError, OPE>> {
-    //     // Need to invert bits
-    //     self.write_register(Register::MaskInterrupt, !flags.bits())?;
-    //     // Clear interrupts
-    //     self.read_register(Register::Interrupt)
-    // }
+    pub fn clear_interrupts(&mut self) -> Result<(), Error<SPICS::SpiError, OPE>> {
+        self.read_register(Register::MainInterruptRegister)?;
+        self.read_register(Register::TimerAndNFCInterruptRegister)?;
+        self.read_register(Register::ErrorAndWakeUpInterruptRegister)?;
+        Ok(())
+    }
+
+    pub fn enable_interrupts(
+        &mut self,
+        flags: InterruptFlags,
+    ) -> Result<(), Error<SPICS::SpiError, OPE>> {
+        self.modify_interrupt(flags.bits(), 0)
+    }
+
+    pub fn disable_interrupts(
+        &mut self,
+        flags: InterruptFlags,
+    ) -> Result<(), Error<SPICS::SpiError, OPE>> {
+        self.modify_interrupt(0, flags.bits())
+    }
+
+    fn modify_interrupt(
+        &mut self,
+        clr_mask: u32,
+        set_mask: u32,
+    ) -> Result<(), Error<SPICS::SpiError, OPE>> {
+        let old_mask = self.interrupt_mask;
+        let new_mask = (!old_mask & clr_mask) | (old_mask & clr_mask);
+
+        self.interrupt_mask &= !clr_mask;
+        self.interrupt_mask |= set_mask;
+
+        if new_mask & 0xff != 0 {
+            self.write_register(
+                Register::MaskMainInterruptRegister,
+                self.interrupt_mask as u8,
+            )?;
+        }
+
+        if new_mask >> 8 & 0xff != 0 {
+            self.write_register(
+                Register::MaskTimerAndNFCInterruptRegister,
+                (self.interrupt_mask >> 8) as u8,
+            )?;
+        }
+
+        if new_mask >> 16 & 0xff != 0 {
+            self.write_register(
+                Register::MaskErrorAndWakeUpInterruptRegister,
+                (self.interrupt_mask >> 16) as u8,
+            )?;
+        }
+
+        Ok(())
+    }
+
+    fn modify_register(
+        &mut self,
+        reg: Register,
+        clr_mask: u8,
+        set_mask: u8,
+    ) -> Result<(), Error<SPICS::SpiError, OPE>> {
+        let mut value = self.read_register(reg)?;
+        value &= !clr_mask;
+        value |= set_mask;
+        self.write_register(reg, value)?;
+        Ok(())
+    }
 
     pub fn execute_command(&mut self, command: Command) -> Result<(), Error<SPICS::SpiError, OPE>> {
-        debug!("Executing command: {:?}", command);
+        println!("Executing command: {:?}", command);
         self.write(&[command.command_pattern()])
     }
 
-    pub fn write_register(&mut self, reg: Register, val: u8) -> Result<(), Error<SPICS::SpiError, OPE>> {
-        debug!("Write register {:?} value: 0b{:08b}", reg, val);
+    pub fn write_register(
+        &mut self,
+        reg: Register,
+        val: u8,
+    ) -> Result<(), Error<SPICS::SpiError, OPE>> {
+        println!("Write register {:?} value: 0b{:08b}", reg, val);
         self.write(&[reg.write_address(), val])
     }
 
     pub fn read_register(&mut self, reg: Register) -> Result<u8, Error<SPICS::SpiError, OPE>> {
         let mut buffer = [reg.read_address(), 0];
 
-        self.spi_with_custom_cs.with_cs_low(&mut self.cs,|spi| {
-            let buffer = spi.transfer(&mut buffer)?;
-            debug!("Read register {:?} got value value: 0b{:08b}", reg, buffer[1]);
+        self.spi_with_custom_cs
+            .with_cs_low(&mut self.cs, |spi| {
+                let buffer = spi.transfer(&mut buffer)?;
+                println!(
+                    "Read register {:?} got value value: 0b{:08b}",
+                    reg, buffer[1]
+                );
 
-            Ok(buffer[1])
-        }).map_err(Error::SpiWithCS)
+                Ok(buffer[1])
+            })
+            .map_err(Error::SpiWithCS)
     }
 
-    // fn read_fifo<'b>(&mut self, buffer: &'b mut [u8]) -> Result<&'b [u8], Error<SPICS::SpiError, OPE>> {
-    //     self.spi_with_custom_cs.with_cs_low(&mut self.cs, move |spi| {
-    //         // initiate fifo read
-    //         spi.transfer(&mut [0b10111111])?;
+    fn read_fifo<'b>(
+        &mut self,
+        buffer: &'b mut [u8],
+    ) -> Result<&'b [u8], Error<SPICS::SpiError, OPE>> {
+        self.spi_with_custom_cs
+            .with_cs_low(&mut self.cs, move |spi| {
+                // initiate fifo read
+                spi.transfer(&mut [0b10111111])?;
 
-    //         let n = buffer.len();
-    //         for slot in &mut buffer[..n] {
-    //             *slot = spi.transfer(&mut [0])?[0];
-    //         }
+                let n = buffer.len();
+                for slot in &mut buffer[..n] {
+                    *slot = spi.transfer(&mut [0])?[0];
+                }
 
-    //         debug!("Read from fifo: {:x?}", buffer);
-    //         Ok(&*buffer)
-    //     }).map_err(Error::SpiWithCS)
-    // }
+                println!("Read from fifo: {:x?}", buffer);
+                Ok(&*buffer)
+            })
+            .map_err(Error::SpiWithCS)
+    }
 
-    // fn write_fifo(&mut self, bytes: &[u8]) -> Result<(), Error<SPICS::SpiError, OPE>> {
-    //     debug!("Write in fifo: {:x?}", bytes);
-    //     self.spi_with_custom_cs.with_cs_low(&mut self.cs,|spi| {
-    //         // initiate fifo write
-    //         spi.transfer(&mut [0b10000000])?;
+    fn write_fifo(&mut self, bytes: &[u8]) -> Result<(), Error<SPICS::SpiError, OPE>> {
+        println!("Write in fifo: {:x?}", bytes);
+        self.spi_with_custom_cs
+            .with_cs_low(&mut self.cs, |spi| {
+                // initiate fifo write
+                spi.transfer(&mut [0b10000000])?;
 
-    //         spi.write(bytes)?;
+                spi.write(bytes)?;
 
-    //         Ok(())
-    //     }).map_err(Error::SpiWithCS)
-    // }
+                Ok(())
+            })
+            .map_err(Error::SpiWithCS)
+    }
 
-    // fn wait_for_interrupt(&mut self, timeout_in_ms: u16) -> Result<InterruptFlags, Error<SPICS::SpiError, OPE>> {
-    //     debug!("Wait for interrupt {}ms", timeout_in_ms);
-    //     let mut i = 0;
-    //     loop {
-    //         if self.intr.is_high().map_err(Error::InterruptPin)? {
-    //             return Ok(InterruptFlags::from_bits_truncate(
-    //                 self.read_register(Register::Interrupt)?,
-    //             ));
-    //         }
+    fn wait_for_interrupt(
+        &mut self,
+        mask: InterruptFlags,
+        timeout_in_ms: u16,
+    ) -> Result<InterruptFlags, Error<SPICS::SpiError, OPE>> {
+        println!("Wait for interrupt {}ms", timeout_in_ms);
+        let mut i = 0;
+        let mut interrupt = 0u32;
+        loop {
+            if self.intr.is_high().map_err(Error::InterruptPin)? {
+                interrupt |= self.read_register(Register::MainInterruptRegister)? as u32;
+                interrupt |=
+                    (self.read_register(Register::TimerAndNFCInterruptRegister)? as u32) << 8;
+                interrupt |=
+                    (self.read_register(Register::ErrorAndWakeUpInterruptRegister)? as u32) << 16;
 
-    //         if i >= timeout_in_ms {
-    //             break;
-    //         }
-    //         self.delay.delay_ms(1);
-    //         i += 1;
-    //     }
+                // Match any interrupt
+                if interrupt & mask.bits() > 0 {
+                    return Ok(InterruptFlags::from_bits_truncate(interrupt));
+                }
+            }
 
-    //     Err(Error::InterruptTimeout)
-    // }
+            if i >= timeout_in_ms {
+                break;
+            }
+            self.delay.delay_ms(1);
+            i += 1;
+        }
+
+        Err(Error::InterruptTimeout)
+    }
 
     fn write(&mut self, bytes: &[u8]) -> Result<(), Error<SPICS::SpiError, OPE>> {
-        self.spi_with_custom_cs.with_cs_low(&mut self.cs, |spi| {
-            spi.write(bytes)?;
+        self.spi_with_custom_cs
+            .with_cs_low(&mut self.cs, |spi| {
+                spi.write(bytes)?;
 
-            Ok(())
-        }).map_err(Error::SpiWithCS)
+                Ok(())
+            })
+            .map_err(Error::SpiWithCS)
     }
-
 }
 
 #[derive(Debug)]
