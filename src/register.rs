@@ -27,11 +27,11 @@ pub enum Register {
     GeneralPurposeTimerRegister1 = 0x12,
     GeneralPurposeTimerRegister2 = 0x13,
     // Interrupt and associated reporting
-    MainInterruptRegister = 0x14,
+    MaskMainInterruptRegister = 0x14,
     MaskTimerAndNFCInterruptRegister = 0x15,
     MaskErrorAndWakeUpInterruptRegister = 0x16,
-    MainInterruptRegister2 = 0x17,
-    MaskTimerAndNFCInterruptRegister2 = 0x18,
+    MainInterruptRegister = 0x17,
+    TimerAndNFCInterruptRegister = 0x18,
     ErrorAndWakeUpInterruptRegister = 0x19,
     FIFOStatusRegister1 = 0x1A,
     FIFOStatusRegister2 = 0x1B,
@@ -39,9 +39,9 @@ pub enum Register {
     // Definition of transmitted bytes
     NumberOfTransmittedBytesRegister1 = 0x1D,
     NumberOfTransmittedBytesRegister2 = 0x1E,
-    // NFCIP bit rate detection display 
+    // NFCIP bit rate detection display
     NFCIPBitRateDetectionDisplayRegister = 0x1F,
-    // A/D converter output 
+    // A/D converter output
     ADConverterOutputRegister = 0x20,
     // Antenna calibration
     AntennaCalibrationControlRegister = 0x21,
@@ -52,7 +52,7 @@ pub enum Register {
     AMModulationDepthDisplayRegister = 0x25,
     RFOAMModulatedLevelDefinitionRegister = 0x26,
     RFONormalLevelDefinitionRegister = 0x27,
-    // External field detector threshold 
+    // External field detector threshold
     ExternalFieldDetectorThresholdRegister = 0x29,
     // Regulator
     RegulatorVoltageControlRegister = 0x2A,
@@ -60,7 +60,7 @@ pub enum Register {
     // Receiver State display
     RSSIDisplayRegister = 0x2C,
     GainReductionStateRegister = 0x2D,
-    // Capacitive sensor 
+    // Capacitive sensor
     CapacitiveSensorControlRegister = 0x2E,
     CapacitiveSensorDisplayRegister = 0x2F,
     // Auxiliary display
@@ -104,16 +104,37 @@ impl Register {
 }
 
 bitflags! {
-    pub struct InterruptFlags: u8 {
-        const BIT_COLLISION = 0b0000_0001;
-        const CRC_ERROR = 0b0000_0010;
-        const RECEIVE_DATA_CODING_ERROR = 0b000_0100;
+    pub struct InterruptFlags: u32 {
+        const MASK_ALL = 0xFFFFFF; // Disable all interrupts
+        const ERROR = 0b000_0001;
+        const TIMER = 0b000_0010;
+        const BIT_COLLISION = 0b000_0100;
         const END_OF_TRANSMISSION = 0b000_1000;
         const END_OF_RECEIVE = 0b0001_0000;
-        const FIFO_WATER_LEVEL = 0b0010_0000;
-        const NFC_EVENT = 0b0100_0000;
+        const START_OF_RECEIVE = 0b0010_0000;
+        const FIFO_WATER_LEVEL = 0b0100_0000;
         const OSCILLATOR_FREQUENCY_STABLE = 0b1000_0000;
 
-        const ALL = 0b1111_1111;
+        // Timer and NFC Interrupt Register
+        const INITIATOR_BIT_RATE_WAS_RECOGNIZED = 0b0000_0001 << 8;
+        /// An external field was not detected during RF Collision Avoidance, field was switched on, IRQ is sent after minimum guard time according to NFCIP-1
+        const MINIMUM_GUARD_TIME_EXPIRE = 0b0000_0010 << 8;
+        /// An external field was detected during RF Collision Avoidance
+        const COLLSION_DETECTED = 0b0000_0100 << 8;
+        const EXTERNAL_FIELD_DROP_BELOW = 0b0000_1000 << 8;
+        const EXTERNAL_FIELD_HIGHER_THAN = 0b0001_0000 << 8;
+        const GENERAL_TIMER_EXPIRE = 0b0010_0000 << 8;
+        const NO_RESPONSE_TIMER_EXPIRE = 0b0100_0000 << 8;
+        const TERMINATION_OF_DIRECT_COMMAND = 0b1000_0000 << 8;
+
+        // Error and wake-up interrupt register
+        const WAKE_UP_CAPACITANCE_MEASUREMENT = 0b0000_0001 << 16;
+        const WAKE_UP_PHASE_MEASUREMENT = 0b0000_0010 << 16;
+        const WAKE_UP_AMPLITUDE_MEASUREMENT = 0b0000_0100 << 16;
+        const WAKE_UP_TIMER_INTERRUPT = 0b0000_1000 << 16;
+        const HARD_FARMING_ERROR = 0b0001_0000 << 16;
+        const SOFT_FARMING_ERROR = 0b0010_0000 << 16;
+        const PARITY_ERROR = 0b0100_0000 << 16;
+        const CRC_ERROR = 0b1000_0000 << 16;
     }
 }
