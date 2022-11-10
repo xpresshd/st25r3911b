@@ -266,14 +266,11 @@ where
     pub fn reqa(&mut self) -> Result<Option<AtqA>, Error<SPICS::SpiError, OPE>> {
         println!("reqa");
 
-        // TODO: make sure tx_en on Operation control register is on
-        self.read_register(Register::OperationControlRegister)?;
-
         // Enable anti collision to recognize collision in first byte of SENS_REQ
         self.modify_register(Register::ISO1443AAndNFC106kbsRegister, 0, 0b0000_0001)?;
 
-        // Disable CRC while receiving since ATQA has no CRC included
-        self.modify_register(Register::AuxiliaryRegister, 0, 1 << 7)?;
+        // Disable CRC while receiving since ATQA has no CRC included and use long range
+        self.modify_register(Register::AuxiliaryRegister, 0, 1 << 7 | 1)?;
 
         // Set time when RX is not active after transmission
         // self.write_register(
