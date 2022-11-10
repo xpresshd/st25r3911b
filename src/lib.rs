@@ -339,13 +339,62 @@ where
 
         println!("intr: {:?}", intr);
 
-        let fifo_reg = self.read_register(Register::FIFOStatusRegister1)?;
+        // Start of TransceiveRx
+
+        // Only raise Timeout if NRE is detected with no Rx Start (NRT EMV mode)
+        if intr.contains(InterruptFlags::NO_RESPONSE_TIMER_EXPIRE)
+            && !intr.contains(InterruptFlags::START_OF_RECEIVE)
+        {
+            return Ok(None);
+        }
+
+        // Only raise Link Loss if EOF is detected with no Rx Start
+        if intr.contains(InterruptFlags::EXTERNAL_FIELD_DROP_BELOW)
+            && !intr.contains(InterruptFlags::START_OF_RECEIVE)
+        {
+            return Err(Error::LinkLoss);
+        }
+        // If dont have end of receive and start of receive, throw io error
+        if !intr.contains(InterruptFlags::END_OF_RECEIVE)
+            || !intr.contains(InterruptFlags::START_OF_RECEIVE)
+        {
+            return Err(Error::IOError);
+        }
+
+        // Error check part
+        if intr.contains(InterruptFlags::HARD_FARMING_ERROR)
+            || intr.contains(InterruptFlags::SOFT_FARMING_ERROR)
+        {
+            return Err(Error::FarmingError);
+        }
+        if intr.contains(InterruptFlags::PARITY_ERROR) {
+            return Err(Error::ParityError);
+        }
+        if intr.contains(InterruptFlags::CRC_ERROR) {
+            return Err(Error::CRCError);
+        }
+
+        let fifo_reg1 = self.read_register(Register::FIFOStatusRegister1)?;
         let fifo_reg2 = self.read_register(Register::FIFOStatusRegister2)?;
 
-        if fifo_reg == 0b11111111 {
+        // Check if the reception ends with an incomplete byte (residual bits)
+        if fifo_reg2 & (7 << 1 | 1 << 4) != 0 {
+            return Err(Error::FifoIncompleteByte);
+        }
+
+        // Check if the reception ends with missing parity bit
+        if fifo_reg2 & (1 << 0) != 0 {
+            return Err(Error::FarmingError);
+        }
+
+        // Read data
+        let bytes_total = fifo_reg1;
+
+        if bytes_total != 2 {
             // No PICC in area
             return Ok(None);
         }
+
         let mut buffer = [0u8; 2];
 
         self.read_fifo(&mut buffer)?;
@@ -759,12 +808,19 @@ pub enum Error<E, OPE> {
     AntennaCalibration,
 
     InterruptTimeout,
-    NoRoom,
-    Collision,
-    Proprietary,
-    AntiCollisionMaxLoopsReached,
-    IncompleteFrame,
-    NotAcknowledged,
     InvalidDevice,
     FailedToTurnOnField,
+
+    LinkLoss,
+    IOError,
+    FarmingError,
+    CRCError,
+    ParityError,
+    FifoIncompleteByte,
+    // NoRoom,
+    // Collision,
+    // Proprietary,
+    // AntiCollisionMaxLoopsReached,
+    // IncompleteFrame,
+    // NotAcknowledged,
 }
