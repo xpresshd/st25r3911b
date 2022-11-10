@@ -236,9 +236,38 @@ where
         self.execute_command(Command::SetDefault)
     }
 
+    pub fn field_on(&mut self) -> Result<(), Error<SPICS::SpiError, OPE>> {
+        // set no collision threshold
+        self.modify_register(Register::ExternalFieldDetectorThresholdRegister, 0x0F, 0x03)?;
+        // set no peer threshold
+        self.modify_register(Register::ExternalFieldDetectorThresholdRegister, 0xF0, 0x30)?;
+
+        let intr_flags =
+            InterruptFlags::FIELD_COLLISION_DETECTED | InterruptFlags::MINIMUM_GUARD_TIME_EXPIRE;
+
+        self.enable_interrupts(intr_flags)?;
+        self.execute_command(Command::NFCInitialFieldOn)?;
+        let intr_res = self.wait_for_interrupt(intr_flags, 10);
+        self.disable_interrupts(intr_flags)?;
+
+        let intr = intr_res?;
+        if intr.contains(InterruptFlags::MINIMUM_GUARD_TIME_EXPIRE) {
+            // Also enable Receiver
+            self.modify_register(Register::OperationControlRegister, 0, 1 << 6 | 1 << 3)?;
+
+            // Wait specific Guard Time when listener is exposed to an Unmodulated Carrier.
+            self.delay.delay_ms(5);
+            return Ok(());
+        }
+        Err(Error::FailedToTurnOnField)
+    }
+
     /// Sends a REQuest type A to nearby PICCs
     pub fn reqa(&mut self) -> Result<Option<AtqA>, Error<SPICS::SpiError, OPE>> {
         println!("reqa");
+
+        // TODO: make sure tx_en on Operation control register is on
+        self.read_register(Register::OperationControlRegister)?;
 
         // Enable anti collision to recognize collision in first byte of SENS_REQ
         self.modify_register(Register::ISO1443AAndNFC106kbsRegister, 0, 0b0000_0001)?;
@@ -247,13 +276,13 @@ where
         self.modify_register(Register::AuxiliaryRegister, 0, 1 << 7)?;
 
         // Set time when RX is not active after transmission
-        self.write_register(
-            Register::MaskReceiveTimerRegister,
-            utils::fc_to_64fc(MASK_RECEIVE_TIMER * 5) as u8,
-        )?;
+        // self.write_register(
+        //     Register::MaskReceiveTimerRegister,
+        //     utils::fc_to_64fc(MASK_RECEIVE_TIMER) as u8,
+        // )?;
 
         // Set time before it RX should be detected
-        let no_response_timer_fc = utils::fc_to_64fc(NO_RESPONSE_TIMER * 10);
+        let no_response_timer_fc = 35 + 9; // utils::fc_to_64fc(NO_RESPONSE_TIMER * 10);
         self.modify_register(
             Register::GeneralPurposeAndNoResponseTimerControlRegister,
             0b0000_0011,
@@ -280,6 +309,7 @@ where
         self.execute_command(Command::Clear)?;
         // Disable all interrupts
         self.disable_interrupts(InterruptFlags::MASK_ALL)?;
+        self.clear_interrupts()?;
         // Reset RX Gain
         self.execute_command(Command::ResetRxGain)?;
         // End prepare transmission
@@ -306,13 +336,14 @@ where
         // TODO: Check which command to run
         self.execute_command(Command::TransmitREQA)?;
 
-        let intr = self.wait_for_interrupt(interrupt_flags, 10)?;
+        let intr_res = self.wait_for_interrupt(interrupt_flags, 2);
+        self.disable_interrupts(interrupt_flags)?;
+        let intr = intr_res?;
 
-        println!("intr: 0b{:08b}", intr);
+        println!("intr: {:?}", intr);
 
         let fifo_reg = self.read_register(Register::FIFOStatusRegister1)?;
-
-        println!("fifo_reg: 0b{:08b}", fifo_reg);
+        let fifo_reg2 = self.read_register(Register::FIFOStatusRegister2)?;
 
         if fifo_reg == 0b11111111 {
             // No PICC in area
@@ -738,4 +769,5 @@ pub enum Error<E, OPE> {
     IncompleteFrame,
     NotAcknowledged,
     InvalidDevice,
+    FailedToTurnOnField,
 }
