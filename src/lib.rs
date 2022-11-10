@@ -423,6 +423,205 @@ where
         Ok(Some(AtqA { bytes: buffer }))
     }
 
+    fn anticollision_transmit<const RX: usize>(&mut self, tx_buf: &[u8], tx_bytes: usize, tx_bits: u8, without_crc: bool) -> Result<FifoData<RX>, Error<SPICS::SpiError, OPE>> {
+        match without_crc {
+            true => {
+                self.modify_register(Register::ISO1443AAndNFC106kbsRegister, 0, 1 << 0)?;
+                self.modify_register(Register::AuxiliaryRegister, 0, 1 << 7)?;
+            },
+            false => {
+                self.modify_register(Register::ISO1443AAndNFC106kbsRegister,  1 << 0, 0)?;
+                self.modify_register(Register::AuxiliaryRegister,  1 << 7, 0)?;
+            },
+        }
+
+         // Set time before it RX should be detected
+         let no_response_timer_fc = 35 + 9; // utils::fc_to_64fc(NO_RESPONSE_TIMER * 10);
+         self.modify_register(
+             Register::GeneralPurposeAndNoResponseTimerControlRegister,
+             0b0000_0011,
+             0,
+         )?;
+ 
+         self.write_register(
+             Register::NoResponseTimerRegister1,
+             (no_response_timer_fc >> 8) as u8,
+         )?;
+         self.write_register(
+             Register::NoResponseTimerRegister2,
+             no_response_timer_fc as u8,
+         )?;
+ 
+         // Prepare transmission
+         // Clear EMVCo mode
+         self.modify_register(
+             Register::GeneralPurposeAndNoResponseTimerControlRegister,
+             0b0000_0010,
+             0,
+         )?;
+         // Clear FIFO
+         self.execute_command(Command::Clear)?;
+         // Disable all interrupts
+         self.disable_interrupts(InterruptFlags::MASK_ALL)?;
+         self.clear_interrupts()?;
+         // Reset RX Gain
+         self.execute_command(Command::ResetRxGain)?;
+
+         let interrupt_flags = InterruptFlags::END_OF_TRANSMISSION
+            | InterruptFlags::BIT_COLLISION
+            | InterruptFlags::START_OF_RECEIVE
+            | InterruptFlags::END_OF_RECEIVE
+            | InterruptFlags::NO_RESPONSE_TIMER_EXPIRE;
+
+        // Enable TX and RX interrupts
+        self.enable_interrupts(interrupt_flags)?;
+
+        self.write_fifo(&tx_buf[0..tx_bytes])?;
+
+        // Set number of complete bytes
+        self.modify_register(
+            Register::NumberOfTransmittedBytesRegister2,
+            0xF8,
+            (tx_bytes << 3) as u8 & 0xF8,
+        )?;
+        let msb_val = (tx_bytes >> 0x5) as u8;
+        self.write_register(Register::NumberOfTransmittedBytesRegister1, msb_val)?;
+        // End Set number of complete bytes
+
+        // Set number of incomplete bit in last byte
+        self.modify_register(
+            Register::NumberOfTransmittedBytesRegister2,
+            0x07,
+            tx_bits & 0x07,
+        )?;
+        // End Set number of incomplete bit in last byte
+
+        match without_crc {
+            true => {
+                self.execute_command(Command::TransmitWithoutCRC)?;
+            },
+            false => {
+                self.execute_command(Command::TransmitWithCRC)?;
+            },
+        }
+        let intr_res = self.wait_for_interrupt(interrupt_flags, 2);
+        self.disable_interrupts(interrupt_flags)?;
+        let intr = intr_res?;
+
+        println!("intr: {:?}", intr);
+
+        if intr.contains(InterruptFlags::BIT_COLLISION) {
+            return Err(Error::Collision);
+        }
+
+        self.fifo_data()
+    }
+    
+    pub fn select(&mut self) -> Result<Uid, Error<SPICS::SpiError, OPE>> {
+        println!("Select");
+        let mut cascade_level: u8 = 0;
+        let mut uid_bytes: [u8; 10] = [0u8; 10];
+        let mut uid_idx: usize = 0;
+        let sak = 'cascade: loop {
+            let cmd = match cascade_level {
+                0 => picc::Command::SelCl1,
+                1 => picc::Command::SelCl2,
+                2 => picc::Command::SelCl3,
+                _ => unreachable!(),
+            };
+            let mut known_bits = 0;
+            let mut tx = [0u8; 9];
+            tx[0] = cmd as u8;
+            let mut anticollision_cycle_counter = 0;
+
+            println!("Select with cascade {}", cascade_level);
+            'anticollision: loop {
+                anticollision_cycle_counter += 1;
+                println!("Stating anticollision loop nr {} read uid_bytes {:x?}", anticollision_cycle_counter, uid_bytes);
+
+                if anticollision_cycle_counter > 32 {
+                    return Err(Error::AntiCollisionMaxLoopsReached);
+                }
+                let tx_last_bits = known_bits % 8;
+                let tx_bytes = 2 + known_bits / 8;
+                let end = tx_bytes as usize + if tx_last_bits > 0 { 1 } else { 0 };
+                tx[1] = (tx_bytes << 4) + tx_last_bits;
+
+                // Tell transceive the only send `tx_last_bits` of the last byte
+                // and also to put the first received bit at location `tx_last_bits`.
+                // This makes it easier to append the received bits to the uid (in `tx`).
+                match self.anticollision_transmit::<5>(&tx[0..end], end, tx_last_bits, true) {
+                    Ok(fifo_data) => {
+                        fifo_data.copy_bits_to(&mut tx[2..=6], known_bits);
+                        println!("Read full response {:?}", fifo_data);
+                        break 'anticollision;
+                    }
+                    Err(Error::Collision) => {
+                        let coll_reg = self.read_register(Register::CollisionDisplayRegister)?;
+
+                        let bytes_before_coll = ((coll_reg >> 4) & 0b1111) - 2;
+                        let bits_before_coll = (coll_reg >> 1) & 0b111;
+
+                        let coll_pos = bytes_before_coll * 8 + bits_before_coll + 1;
+
+                        if coll_pos < known_bits || coll_pos > 8 * 9 {
+                            // No progress
+                            return Err(Error::Collision);
+                        }
+
+                        let fifo_data = self.fifo_data::<5>()?;
+                        println!("Read partial response {:?}", fifo_data);
+
+                        fifo_data.copy_bits_to(&mut tx[2..=6], known_bits);
+                        known_bits = coll_pos;
+
+                        // Set the bit of collision position to 1
+                        let count = known_bits % 8;
+                        let check_bit = (known_bits - 1) % 8;
+                        let index: usize =
+                            1 + (known_bits / 8) as usize + if count != 0 { 1 } else { 0 };
+                        // TODO safe check that index is in range
+                        tx[index] |= 1 << check_bit;
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+
+            // send select
+            tx[1] = 0x70; // NVB: 7 valid bytes
+            tx[6] = tx[2] ^ tx[3] ^ tx[4] ^ tx[5]; // BCC
+
+            let rx = self.anticollision_transmit::<3>(&tx[0..7], 7, 0, false)?;
+            // println!("rx {:?}", rx);
+
+            let sak = picc::Sak::from(rx.buffer[0]);
+
+            if !sak.is_complete() {
+                uid_bytes[uid_idx..uid_idx + 3].copy_from_slice(&tx[3..6]);
+                uid_idx += 3;
+                cascade_level += 1;
+            } else {
+                uid_bytes[uid_idx..uid_idx + 4].copy_from_slice(&tx[2..6]);
+                break 'cascade sak;
+            }
+        };
+
+        match cascade_level {
+            0 => Ok(Uid::Single(GenericUid {
+                bytes: uid_bytes[0..4].try_into().unwrap(),
+                sak,
+            })),
+            1 => Ok(Uid::Double(GenericUid {
+                bytes: uid_bytes[0..7].try_into().unwrap(),
+                sak,
+            })),
+            2 => Ok(Uid::Triple(GenericUid {
+                bytes: uid_bytes,
+                sak,
+            })),
+            _ => unreachable!(),
+        }
+    }
     // /// Sends command to enter HALT state
     // pub fn hlta(&mut self) -> Result<(), Error<SPICS::SpiError, OPE>> {
     //     println!("hlta");
@@ -438,190 +637,27 @@ where
     //     }
     // }
 
-    // pub fn select(&mut self) -> Result<Uid, Error<SPICS::SpiError, OPE>> {
-    //     println!("Select");
-    //     let mut cascade_level: u8 = 0;
-    //     let mut uid_bytes: [u8; 10] = [0u8; 10];
-    //     let mut uid_idx: usize = 0;
-    //     let sak = 'cascade: loop {
-    //         let cmd = match cascade_level {
-    //             0 => picc::Command::SelCl1,
-    //             1 => picc::Command::SelCl2,
-    //             2 => picc::Command::SelCl3,
-    //             _ => unreachable!(),
-    //         };
-    //         let mut known_bits = 0;
-    //         let mut tx = [0u8; 9];
-    //         tx[0] = cmd as u8;
-    //         let mut anticollision_cycle_counter = 0;
+    fn fifo_data<const RX: usize>(&mut self) -> Result<FifoData<RX>, Error<SPICS::SpiError, OPE>> {
+        let mut buffer = [0u8; RX];
+        let mut valid_bytes: usize = 0;
 
-    //         println!("Select with cascade {}", cascade_level);
-    //         'anticollision: loop {
-    //             anticollision_cycle_counter += 1;
-    //             println!("Stating anticollision loop nr {} read uid_bytes {:x?}", anticollision_cycle_counter, uid_bytes);
+        if RX > 0 {
+            let fifo_status = self.read_register(Register::FIFOStatusRegister1)?;
 
-    //             if anticollision_cycle_counter > 32 {
-    //                 return Err(Error::AntiCollisionMaxLoopsReached);
-    //             }
-    //             let tx_last_bits = known_bits % 8;
-    //             let tx_bytes = 2 + known_bits / 8;
-    //             let end = tx_bytes as usize + if tx_last_bits > 0 { 1 } else { 0 };
-    //             tx[1] = (tx_bytes << 4) + tx_last_bits;
+            valid_bytes = fifo_status as usize;
+            if valid_bytes > RX {
+                return Err(Error::FifoNoRoom);
+            }
+            if valid_bytes > 0 {
+                self.read_fifo(&mut buffer[0..valid_bytes])?;
+            }
+        }
 
-    //             // Tell transceive the only send `tx_last_bits` of the last byte
-    //             // and also to put the first received bit at location `tx_last_bits`.
-    //             // This makes it easier to append the received bits to the uid (in `tx`).
-    //             match self.communicate_to_picc::<5>(&tx[0..end], tx_last_bits, true, false) {
-    //                 Ok(fifo_data) => {
-    //                     fifo_data.copy_bits_to(&mut tx[2..=6], known_bits);
-    //                     println!("Read full response {:?}", fifo_data);
-    //                     break 'anticollision;
-    //                 }
-    //                 Err(Error::Collision) => {
-    //                     let coll_reg = self.read_register(Register::Collision)?;
-
-    //                     let bytes_before_coll = ((coll_reg >> 4) & 0b1111) - 2;
-    //                     let bits_before_coll = (coll_reg >> 1) & 0b111;
-
-    //                     let coll_pos = bytes_before_coll * 8 + bits_before_coll + 1;
-
-    //                     if coll_pos < known_bits || coll_pos > 8 * 9 {
-    //                         // No progress
-    //                         return Err(Error::Collision);
-    //                     }
-
-    //                     let fifo_data = self.fifo_data::<5>()?;
-    //                     println!("Read partial response {:?}", fifo_data);
-
-    //                     fifo_data.copy_bits_to(&mut tx[2..=6], known_bits);
-    //                     known_bits = coll_pos;
-
-    //                     // Set the bit of collision position to 1
-    //                     let count = known_bits % 8;
-    //                     let check_bit = (known_bits - 1) % 8;
-    //                     let index: usize =
-    //                         1 + (known_bits / 8) as usize + if count != 0 { 1 } else { 0 };
-    //                     // TODO safe check that index is in range
-    //                     tx[index] |= 1 << check_bit;
-    //                 }
-    //                 Err(e) => return Err(e),
-    //             }
-    //         }
-
-    //         // send select
-    //         tx[1] = 0x70; // NVB: 7 valid bytes
-    //         tx[6] = tx[2] ^ tx[3] ^ tx[4] ^ tx[5]; // BCC
-
-    //         let rx = self.communicate_to_picc::<1>(&tx[0..7], 0, false, true)?;
-    //         // println!("rx {:?}", rx);
-
-    //         let sak = picc::Sak::from(rx.buffer[0]);
-
-    //         if !sak.is_complete() {
-    //             uid_bytes[uid_idx..uid_idx + 3].copy_from_slice(&tx[3..6]);
-    //             uid_idx += 3;
-    //             cascade_level += 1;
-    //         } else {
-    //             uid_bytes[uid_idx..uid_idx + 4].copy_from_slice(&tx[2..6]);
-    //             break 'cascade sak;
-    //         }
-    //     };
-
-    //     match cascade_level {
-    //         0 => Ok(Uid::Single(GenericUid {
-    //             bytes: uid_bytes[0..4].try_into().unwrap(),
-    //             sak,
-    //         })),
-    //         1 => Ok(Uid::Double(GenericUid {
-    //             bytes: uid_bytes[0..7].try_into().unwrap(),
-    //             sak,
-    //         })),
-    //         2 => Ok(Uid::Triple(GenericUid {
-    //             bytes: uid_bytes,
-    //             sak,
-    //         })),
-    //         _ => unreachable!(),
-    //     }
-    // }
-
-    // /// Sends a Wake UP type A to nearby PICCs
-    // pub fn communicate_to_picc<const RX: usize>(
-    //     &mut self,
-    //     // the data to be sent
-    //     tx_buffer: &[u8],
-    //     // number of bits in the last byte that will be transmitted
-    //     tx_last_bits: u8,
-    //     with_anti_collision: bool,
-    //     with_crc: bool,
-    // ) -> Result<FifoData<RX>, Error<SPICS::SpiError, OPE>> {
-    //     println!("Communicate to picc {:x?}", tx_buffer);
-    //     self.setup_interrupt_mask(InterruptFlags::END_OF_RECEIVE)?;
-
-    //     self.execute_command(Command::Clear)?;
-
-    //     let full_bytes_num = if tx_last_bits == 0 {
-    //         tx_buffer.len()
-    //     } else {
-    //         tx_buffer.len() - 1
-    //     };
-
-    //     let flags = (full_bytes_num << 6)
-    //         + (((tx_last_bits & 0x7) << 3) as usize)
-    //         + (with_anti_collision as usize);
-
-    //     self.write_register(Register::NumberOfTransmittedBytes0, flags as u8)?;
-    //     self.write_register(
-    //         Register::NumberOfTransmittedBytes1,
-    //         (full_bytes_num >> 2) as u8,
-    //     )?;
-
-    //     // Enable AGC (Useful in case the transponder is close to the reader)
-    //     self.write_register(Register::ReceiverConfiguration, 0x80)?;
-
-    //     if with_crc {
-    //         self.write_register(Register::ConfigurationRegister3, 0x0)?;
-    //     } else {
-    //         self.write_register(Register::ConfigurationRegister3, 0x80)?;
-    //     }
-
-    //     self.write_fifo(tx_buffer)?;
-
-    //     if with_crc {
-    //         self.execute_command(Command::TransmitWithCRC)?;
-    //     } else {
-    //         self.execute_command(Command::TransmitWithoutCRC)?;
-    //     }
-
-    //     let intr = self.wait_for_interrupt(5)?;
-
-    //     if intr.contains(InterruptFlags::BIT_COLLISION) {
-    //         return Err(Error::Collision);
-    //     }
-
-    //     self.fifo_data()
-    // }
-
-    // fn fifo_data<const RX: usize>(&mut self) -> Result<FifoData<RX>, Error<SPICS::SpiError, OPE>> {
-    //     let mut buffer = [0u8; RX];
-    //     let mut valid_bytes: usize = 0;
-
-    //     if RX > 0 {
-    //         let fifo_status = self.read_register(Register::FIFOStatus)?;
-
-    //         valid_bytes = (fifo_status >> 2) as usize;
-    //         if valid_bytes > RX {
-    //             return Err(Error::NoRoom);
-    //         }
-    //         if valid_bytes > 0 {
-    //             self.read_fifo(&mut buffer[0..valid_bytes])?;
-    //         }
-    //     }
-
-    //     Ok(FifoData {
-    //         buffer,
-    //         valid_bytes,
-    //     })
-    // }
+        Ok(FifoData {
+            buffer,
+            valid_bytes,
+        })
+    }
 
     pub fn clear_interrupts(&mut self) -> Result<(), Error<SPICS::SpiError, OPE>> {
         self.read_register(Register::MainInterruptRegister)?;
@@ -817,6 +853,9 @@ pub enum Error<E, OPE> {
     CRCError,
     ParityError,
     FifoIncompleteByte,
+    FifoNoRoom,
+    Collision,
+    AntiCollisionMaxLoopsReached,
     // NoRoom,
     // Collision,
     // Proprietary,
