@@ -120,7 +120,7 @@ bitflags! {
         /// An external field was not detected during RF Collision Avoidance, field was switched on, IRQ is sent after minimum guard time according to NFCIP-1
         const MINIMUM_GUARD_TIME_EXPIRE = 0b0000_0010 << 8;
         /// An external field was detected during RF Collision Avoidance
-        const COLLSION_DETECTED = 0b0000_0100 << 8;
+        const FIELD_COLLISION_DETECTED = 0b0000_0100 << 8;
         const EXTERNAL_FIELD_DROP_BELOW = 0b0000_1000 << 8;
         const EXTERNAL_FIELD_HIGHER_THAN = 0b0001_0000 << 8;
         const GENERAL_TIMER_EXPIRE = 0b0010_0000 << 8;
