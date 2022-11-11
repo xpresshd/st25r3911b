@@ -154,7 +154,7 @@ where
             delay,
             interrupt_mask: 0,
         };
-        println!("New ST25R3911B driver instance");
+        debug!("New ST25R3911B driver instance");
         st25r3911b.initialize_chip()?;
 
         st25r3911b.check_chip_id()?;
@@ -191,6 +191,15 @@ where
 
         // Make sure Transmitter and Receiver are disabled
         self.modify_register(Register::OperationControlRegister, 1 << 6 | 1 << 3, 0)?;
+
+        // Set NFC to ISO14443A initiator
+        self.write_register(Register::ModeDefinitionRegister, 1 << 3)?;
+
+        // Set bit rate to 106 kbits/s
+        self.write_register(Register::BitRateDefinitionRegister, 0)?;
+
+        // Presets RX and TX configuration 
+        self.execute_command(Command::AnalogPreset)?;
 
         self.check_chip_id()?;
 
@@ -239,8 +248,8 @@ where
     }
 
     pub fn field_on(&mut self) -> Result<(), Error<SPICS::SpiError, OPE>> {
-        // set no collision threshold
-        self.modify_register(Register::ExternalFieldDetectorThresholdRegister, 0x0F, 0x03)?;
+        // set recommended threshold
+        self.modify_register(Register::ExternalFieldDetectorThresholdRegister, 0x0F, 0x07)?;
         // set no peer threshold
         self.modify_register(Register::ExternalFieldDetectorThresholdRegister, 0xF0, 0x30)?;
 
@@ -255,7 +264,7 @@ where
         self.disable_interrupts(intr_flags)?;
 
         let intr = intr_res?;
-        println!("intr: {:?}", intr);
+        debug!("intr: {:?}", intr);
         if intr.contains(InterruptFlags::MINIMUM_GUARD_TIME_EXPIRE) {
             // Also enable Receiver
             self.modify_register(Register::OperationControlRegister, 0, 1 << 6 | 1 << 3)?;
@@ -267,9 +276,38 @@ where
         Err(Error::FailedToTurnOnField)
     }
 
+    /// Sends command to enter HALT state
+    pub fn hlta(&mut self) -> Result<(),  Error<SPICS::SpiError, OPE>> {
+        let buffer: [u8; 2] = [picc::Command::HLTA as u8, 0];
+
+        // The standard says:
+        //   If the PICC responds with any modulation during a period of 1 ms
+        //   after the end of the frame containing the HLTA command,
+        //   this response shall be interpreted as 'not acknowledge'.
+        // We interpret that this way: Only Error::Timeout is a success.
+        match self.anticollision_transmit::<0>(&buffer, 2, 0, false) {
+            Err(Error::Timeout) => Ok(()),
+            Ok(_) => Err(Error::Nak),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Sends a Wake UP type A to nearby PICCs
+    pub fn wupa(&mut self) -> Result<Option<AtqA>, Error<SPICS::SpiError, OPE>> {
+        debug!("wupa");
+
+        self.process_reqa_wupa(Command::TransmitWUPA)
+    }
     /// Sends a REQuest type A to nearby PICCs
     pub fn reqa(&mut self) -> Result<Option<AtqA>, Error<SPICS::SpiError, OPE>> {
-        println!("reqa");
+        debug!("reqa");
+
+        self.process_reqa_wupa(Command::TransmitREQA)
+    }
+
+    /// Sends a REQuest type A to nearby PICCs
+    fn process_reqa_wupa(&mut self, cmd: Command) -> Result<Option<AtqA>, Error<SPICS::SpiError, OPE>> {
+        debug!("reqa");
 
         // Enable anti collision to recognize collision in first byte of SENS_REQ
         self.modify_register(Register::ISO1443AAndNFC106kbsRegister, 0, 0b0000_0001)?;
@@ -284,7 +322,7 @@ where
         // )?;
 
         // Set time before it RX should be detected
-        let no_response_timer_fc = 35 + 9; // utils::fc_to_64fc(NO_RESPONSE_TIMER * 10);
+        let no_response_timer_fc = 35 + 9; // Step in 0.3 ms
         self.modify_register(
             Register::GeneralPurposeAndNoResponseTimerControlRegister,
             0b0000_0011,
@@ -335,14 +373,13 @@ where
         // Clear nbtx bits before sending WUPA/REQA - otherwise ST25R3911 will report parity error
         self.write_register(Register::NumberOfTransmittedBytesRegister2, 0)?;
 
-        // TODO: Check which command to run
-        self.execute_command(Command::TransmitREQA)?;
+        self.execute_command(cmd)?;
 
         let intr_res = self.wait_for_interrupt(interrupt_flags, 2);
         self.disable_interrupts(interrupt_flags)?;
         let intr = intr_res?;
 
-        println!("intr: {:?}", intr);
+        debug!("intr: {:?}", intr);
 
         // Start of TransceiveRx
 
@@ -400,27 +437,6 @@ where
             return Ok(None);
         }
 
-        let mut buffer = [0u8; 2];
-
-        self.read_fifo(&mut buffer)?;
-
-        Ok(Some(AtqA { bytes: buffer }))
-    }
-
-    /// Sends a Wake UP type A to nearby PICCs
-    pub fn wupa(&mut self) -> Result<Option<AtqA>, Error<SPICS::SpiError, OPE>> {
-        println!("wupa");
-        // self.setup_interrupt_mask(InterruptFlags::END_OF_RECEIVE)?;
-        // self.execute_command(Command::TransmitWUPA)?;
-
-        // self.wait_for_interrupt(5)?;
-
-        let fifo_reg = self.read_register(Register::FIFOStatusRegister1)?;
-
-        if fifo_reg == 0b11111111 {
-            // No PICC in area
-            return Ok(None);
-        }
         let mut buffer = [0u8; 2];
 
         self.read_fifo(&mut buffer)?;
@@ -521,7 +537,7 @@ where
         self.disable_interrupts(interrupt_flags)?;
         let intr = intr_res?;
 
-        println!("intr: {:?}", intr);
+        debug!("intr: {:?}", intr);
 
         if intr.contains(InterruptFlags::BIT_COLLISION) {
             return Err(Error::Collision);
@@ -549,7 +565,7 @@ where
     }
 
     pub fn select(&mut self) -> Result<Uid, Error<SPICS::SpiError, OPE>> {
-        println!("Select");
+        debug!("Select");
         let mut cascade_level: u8 = 0;
         let mut uid_bytes: [u8; 10] = [0u8; 10];
         let mut uid_idx: usize = 0;
@@ -565,10 +581,10 @@ where
             tx[0] = cmd as u8;
             let mut anticollision_cycle_counter = 0;
 
-            println!("Select with cascade {}", cascade_level);
+            debug!("Select with cascade {}", cascade_level);
             'anticollision: loop {
                 anticollision_cycle_counter += 1;
-                println!(
+                debug!(
                     "Stating anticollision loop nr {} read uid_bytes {:x?}",
                     anticollision_cycle_counter, uid_bytes
                 );
@@ -581,7 +597,7 @@ where
                 let end = tx_bytes as usize + if tx_last_bits > 0 { 1 } else { 0 };
                 tx[1] = (tx_bytes << 4) + tx_last_bits;
 
-                println!(
+                debug!(
                     "known_bits: {}, end: {}, tx_bytes: {}, tx_last_bits: {}",
                     known_bits, end,tx_bytes, tx_last_bits, 
                 );
@@ -592,16 +608,16 @@ where
                 match self.anticollision_transmit::<5>(&tx[0..end], tx_bytes as usize, tx_last_bits, true) {
                     Ok(fifo_data) => {
                         fifo_data.copy_bits_to(&mut tx[2..=6], known_bits);
-                        println!("Read full response {:?}", fifo_data);
+                        debug!("Read full response {:?}", fifo_data);
                         break 'anticollision;
                     }
                     Err(Error::Collision) => {
                         let coll_reg = self.read_register(Register::CollisionDisplayRegister)?;
-                        println!("coll_reg: 0b{:08b}", coll_reg);
+                        debug!("coll_reg: 0b{:08b}", coll_reg);
 
                         let bytes_before_coll = ((coll_reg >> 4) & 0b1111) - 2;
                         let bits_before_coll = (coll_reg >> 1) & 0b111;
-                        println!(
+                        debug!(
                             "bytes_before_coll: {}, bits_before_coll: {}",
                             bytes_before_coll, bits_before_coll
                         );
@@ -614,7 +630,7 @@ where
                         }
 
                         let fifo_data = self.fifo_data::<5>()?;
-                        println!("Read partial response {:?}", fifo_data);
+                        debug!("Read partial response {:?}", fifo_data);
 
                         fifo_data.copy_bits_to(&mut tx[2..=6], known_bits);
                         known_bits = coll_pos;
@@ -628,7 +644,7 @@ where
                         tx[index] |= 1 << check_bit;
                     }
                     Err(Error::Timeout) => {
-                        println!("Timeout anticollision");
+                        debug!("Timeout anticollision");
                         return Err(Error::Timeout);
                     }
                     Err(e) => return Err(e),
@@ -650,7 +666,7 @@ where
                     Err(e) => break Err(e),
                 }
             }?;
-            // println!("rx {:?}", rx);
+            // debug!("rx {:?}", rx);
 
             let sak = picc::Sak::from(rx.buffer[0]);
 
@@ -680,20 +696,6 @@ where
             _ => unreachable!(),
         }
     }
-    // /// Sends command to enter HALT state
-    // pub fn hlta(&mut self) -> Result<(), Error<SPICS::SpiError, OPE>> {
-    //     println!("hlta");
-    //     // The standard says:
-    //     //   If the PICC responds with any modulation during a period of 1 ms
-    //     //   after the end of the frame containing the HLTA command,
-    //     //   this response shall be interpreted as 'not acknowledge'.
-    //     // We interpret that this way: Only Error::Timeout is a success.
-    //     match self.communicate_to_picc::<0>(&[0x50, 0x00], 0, false, true) {
-    //         Err(Error::InterruptTimeout) => Ok(()),
-    //         Ok(_) => Err(Error::NotAcknowledged),
-    //         Err(e) => Err(e),
-    //     }
-    // }
 
     fn fifo_data<const RX: usize>(&mut self) -> Result<FifoData<RX>, Error<SPICS::SpiError, OPE>> {
         let mut buffer = [0u8; RX];
@@ -796,7 +798,7 @@ where
     }
 
     pub fn execute_command(&mut self, command: Command) -> Result<(), Error<SPICS::SpiError, OPE>> {
-        println!("Executing command: {:?}", command);
+        debug!("Executing command: {:?}", command);
         self.write(&[command.command_pattern()])
     }
 
@@ -805,7 +807,7 @@ where
         reg: Register,
         val: u8,
     ) -> Result<(), Error<SPICS::SpiError, OPE>> {
-        println!("Write register {:?} value: 0b{:08b}", reg, val);
+        debug!("Write register {:?} value: 0b{:08b}", reg, val);
         self.write(&[reg.write_address(), val])
     }
 
@@ -815,7 +817,7 @@ where
         self.spi_with_custom_cs
             .with_cs_low(&mut self.cs, |spi| {
                 let buffer = spi.transfer(&mut buffer)?;
-                println!(
+                debug!(
                     "Read register {:?} got value value: 0b{:08b}",
                     reg, buffer[1]
                 );
@@ -839,14 +841,14 @@ where
                     *slot = spi.transfer(&mut [0])?[0];
                 }
 
-                println!("Read from fifo: {:x?}", buffer);
+                debug!("Read from fifo: {:x?}", buffer);
                 Ok(&*buffer)
             })
             .map_err(Error::SpiWithCS)
     }
 
     fn write_fifo(&mut self, bytes: &[u8]) -> Result<(), Error<SPICS::SpiError, OPE>> {
-        println!("Write in fifo: {:x?}", bytes);
+        debug!("Write in fifo: {:x?}", bytes);
         self.spi_with_custom_cs
             .with_cs_low(&mut self.cs, |spi| {
                 // initiate fifo write
@@ -864,7 +866,7 @@ where
         mask: InterruptFlags,
         timeout_in_ms: u16,
     ) -> Result<InterruptFlags, Error<SPICS::SpiError, OPE>> {
-        println!("Wait for interrupt {}ms", timeout_in_ms);
+        debug!("Wait for interrupt {}ms", timeout_in_ms);
         let mut i = 0;
         let mut interrupt = 0u32;
         loop {
@@ -924,6 +926,7 @@ pub enum Error<E, OPE> {
     Collision,
     AntiCollisionMaxLoopsReached,
     Timeout,
+    Nak,
     // NoRoom,
     // Collision,
     // Proprietary,
