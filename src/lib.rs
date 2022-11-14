@@ -15,14 +15,10 @@ use hal::prelude::_embedded_hal_blocking_spi_Write;
 use command::Command;
 use register::{InterruptFlags, Register};
 
-use crate::consts::MASK_RECEIVE_TIMER;
-use crate::consts::NO_RESPONSE_TIMER;
-
 pub mod command;
 mod consts;
 mod picc;
 pub mod register;
-mod utils;
 
 delog::generate_macros!();
 
@@ -927,10 +923,4 @@ pub enum Error<E, OPE> {
     AntiCollisionMaxLoopsReached,
     Timeout,
     Nak,
-    // NoRoom,
-    // Collision,
-    // Proprietary,
-    // AntiCollisionMaxLoopsReached,
-    // IncompleteFrame,
-    // NotAcknowledged,
 }
