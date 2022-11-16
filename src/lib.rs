@@ -1,4 +1,4 @@
-// #![cfg_attr(not(feature = "std"), no_std)]
+#![cfg_attr(not(feature = "std"), no_std)]
 
 extern crate delog;
 #[macro_use]
@@ -16,7 +16,6 @@ use command::Command;
 use register::{InterruptFlags, Register};
 
 pub mod command;
-mod consts;
 mod picc;
 pub mod register;
 
@@ -301,7 +300,6 @@ where
         self.process_reqa_wupa(Command::TransmitREQA)
     }
 
-    /// Sends a REQuest type A to nearby PICCs
     fn process_reqa_wupa(&mut self, cmd: Command) -> Result<Option<AtqA>, Error<SPICS::SpiError, OPE>> {
         debug!("reqa");
 

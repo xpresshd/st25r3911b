@@ -14,7 +14,7 @@ delog = "0.1.6"
 embedded-hal = { package = "embedded-hal", version = "0.2.7", features = ["unproven"]}
 
 [features]
-default = ["log-all"]
+default = ["log-none"]
 
 log-none = []
 log-info = []
