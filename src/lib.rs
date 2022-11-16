@@ -552,11 +552,6 @@ where
             return Err(Error::Timeout);
         }
 
-        // Check if the reception ends with missing parity bit
-        // if fifo_reg2 & (1 << 0) != 0 {
-        //     return Err(Error::FarmingError);
-        // }
-
         self.fifo_data()
     }
 
@@ -598,7 +593,7 @@ where
                     known_bits, end,tx_bytes, tx_last_bits, 
                 );
 
-                // Tell transceive the only send `tx_last_bits` of the last byte
+                // Tell transmit the only send `tx_last_bits` of the last byte
                 // and also to put the first received bit at location `tx_last_bits`.
                 // This makes it easier to append the received bits to the uid (in `tx`).
                 match self.anticollision_transmit::<5>(&tx[0..end], tx_bytes as usize, tx_last_bits, true) {
@@ -662,7 +657,6 @@ where
                     Err(e) => break Err(e),
                 }
             }?;
-            // debug!("rx {:?}", rx);
 
             let sak = picc::Sak::from(rx.buffer[0]);
 
