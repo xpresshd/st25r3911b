@@ -188,7 +188,7 @@ where
         // Set bit rate to 106 kbits/s
         self.write_register(Register::BitRateDefinitionRegister, 0)?;
 
-        // Presets RX and TX configuration 
+        // Presets RX and TX configuration
         self.execute_command(Command::AnalogPreset)?;
 
         self.check_chip_id()?;
@@ -267,7 +267,7 @@ where
     }
 
     /// Sends command to enter HALT state
-    pub fn hlta(&mut self) -> Result<(),  Error<SPIErr, PinErr>> {
+    pub fn hlta(&mut self) -> Result<(), Error<SPIErr, PinErr>> {
         let buffer: [u8; 2] = [picc::Command::HLTA as u8, 0];
 
         // The standard says:
@@ -570,7 +570,8 @@ where
                 anticollision_cycle_counter += 1;
                 log::debug!(
                     "Stating anticollision loop nr {} read uid_bytes {:x?}",
-                    anticollision_cycle_counter, uid_bytes
+                    anticollision_cycle_counter,
+                    uid_bytes
                 );
 
                 if anticollision_cycle_counter > 32 {
@@ -583,13 +584,21 @@ where
 
                 log::debug!(
                     "known_bits: {}, end: {}, tx_bytes: {}, tx_last_bits: {}",
-                    known_bits, end,tx_bytes, tx_last_bits, 
+                    known_bits,
+                    end,
+                    tx_bytes,
+                    tx_last_bits,
                 );
 
                 // Tell transmit the only send `tx_last_bits` of the last byte
                 // and also to put the first received bit at location `tx_last_bits`.
                 // This makes it easier to append the received bits to the uid (in `tx`).
-                match self.anticollision_transmit::<5>(&tx[0..end], tx_bytes as usize, tx_last_bits, true) {
+                match self.anticollision_transmit::<5>(
+                    &tx[0..end],
+                    tx_bytes as usize,
+                    tx_last_bits,
+                    true,
+                ) {
                     Ok(fifo_data) => {
                         fifo_data.copy_bits_to(&mut tx[2..=6], known_bits);
                         log::debug!("Read full response {:?}", fifo_data);
@@ -603,7 +612,8 @@ where
                         let bits_before_coll = (coll_reg >> 1) & 0b111;
                         log::debug!(
                             "bytes_before_coll: {}, bits_before_coll: {}",
-                            bytes_before_coll, bits_before_coll
+                            bytes_before_coll,
+                            bits_before_coll
                         );
 
                         let coll_pos = bytes_before_coll * 8 + bits_before_coll + 1;
@@ -700,14 +710,13 @@ where
                 if fifo_reg2 & (7 << 1 | 1 << 4) != 0 {
                     valid_bits = (fifo_reg2 & (7 << 1)) >> 1;
                 }
-
             }
         }
 
         Ok(FifoData {
             buffer,
             valid_bytes,
-            valid_bits
+            valid_bits,
         })
     }
 
@@ -785,11 +794,7 @@ where
         self.write(&[command.command_pattern()])
     }
 
-    pub fn write_register(
-        &mut self,
-        reg: Register,
-        val: u8,
-    ) -> Result<(), Error<SPIErr, PinErr>> {
+    pub fn write_register(&mut self, reg: Register, val: u8) -> Result<(), Error<SPIErr, PinErr>> {
         log::debug!("Write register {:?} value: 0b{:08b}", reg, val);
         self.write(&[reg.write_address(), val])
     }
@@ -802,7 +807,8 @@ where
                 let buffer = spi.transfer(&mut buffer)?;
                 log::debug!(
                     "Read register {:?} got value value: 0b{:08b}",
-                    reg, buffer[1]
+                    reg,
+                    buffer[1]
                 );
 
                 Ok(buffer[1])
@@ -810,10 +816,7 @@ where
             .map_err(Error::SpiWithCS)
     }
 
-    fn read_fifo<'b>(
-        &mut self,
-        buffer: &'b mut [u8],
-    ) -> Result<&'b [u8], Error<SPIErr, PinErr>> {
+    fn read_fifo<'b>(&mut self, buffer: &'b mut [u8]) -> Result<&'b [u8], Error<SPIErr, PinErr>> {
         self.spi_with_custom_cs
             .with_cs_low(&mut self.cs, move |spi| {
                 // initiate fifo read
