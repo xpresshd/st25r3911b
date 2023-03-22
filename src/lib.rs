@@ -1,6 +1,5 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 
-extern crate delog;
 #[macro_use]
 extern crate bitflags;
 
@@ -18,8 +17,6 @@ use register::{InterruptFlags, Register};
 pub mod command;
 mod picc;
 pub mod register;
-
-delog::generate_macros!();
 
 #[derive(Debug)]
 pub enum SPIOrCSError<E, OPE> {
@@ -149,7 +146,7 @@ where
             delay,
             interrupt_mask: 0,
         };
-        debug!("New ST25R3911B driver instance");
+        log::debug!("New ST25R3911B driver instance");
         st25r3911b.initialize_chip()?;
 
         st25r3911b.check_chip_id()?;
@@ -259,7 +256,7 @@ where
         self.disable_interrupts(intr_flags)?;
 
         let intr = intr_res?;
-        debug!("intr: {:?}", intr);
+        log::debug!("intr: {:?}", intr);
         if intr.contains(InterruptFlags::MINIMUM_GUARD_TIME_EXPIRE) {
             // Also enable Receiver
             self.modify_register(Register::OperationControlRegister, 0, 1 << 6 | 1 << 3)?;
@@ -289,19 +286,19 @@ where
 
     /// Sends a Wake UP type A to nearby PICCs
     pub fn wupa(&mut self) -> Result<Option<AtqA>, Error<SPICS::SpiError, OPE>> {
-        debug!("wupa");
+        log::debug!("wupa");
 
         self.process_reqa_wupa(Command::TransmitWUPA)
     }
     /// Sends a REQuest type A to nearby PICCs
     pub fn reqa(&mut self) -> Result<Option<AtqA>, Error<SPICS::SpiError, OPE>> {
-        debug!("reqa");
+        log::debug!("reqa");
 
         self.process_reqa_wupa(Command::TransmitREQA)
     }
 
     fn process_reqa_wupa(&mut self, cmd: Command) -> Result<Option<AtqA>, Error<SPICS::SpiError, OPE>> {
-        debug!("reqa");
+        log::debug!("reqa");
 
         // Enable anti collision to recognize collision in first byte of SENS_REQ
         self.modify_register(Register::ISO1443AAndNFC106kbsRegister, 0, 0b0000_0001)?;
@@ -373,7 +370,7 @@ where
         self.disable_interrupts(interrupt_flags)?;
         let intr = intr_res?;
 
-        debug!("intr: {:?}", intr);
+        log::debug!("intr: {:?}", intr);
 
         // Start of TransceiveRx
 
@@ -531,7 +528,7 @@ where
         self.disable_interrupts(interrupt_flags)?;
         let intr = intr_res?;
 
-        debug!("intr: {:?}", intr);
+        log::debug!("intr: {:?}", intr);
 
         if intr.contains(InterruptFlags::BIT_COLLISION) {
             return Err(Error::Collision);
@@ -554,7 +551,7 @@ where
     }
 
     pub fn select(&mut self) -> Result<Uid, Error<SPICS::SpiError, OPE>> {
-        debug!("Select");
+        log::debug!("Select");
         let mut cascade_level: u8 = 0;
         let mut uid_bytes: [u8; 10] = [0u8; 10];
         let mut uid_idx: usize = 0;
@@ -570,10 +567,10 @@ where
             tx[0] = cmd as u8;
             let mut anticollision_cycle_counter = 0;
 
-            debug!("Select with cascade {}", cascade_level);
+            log::debug!("Select with cascade {}", cascade_level);
             'anticollision: loop {
                 anticollision_cycle_counter += 1;
-                debug!(
+                log::debug!(
                     "Stating anticollision loop nr {} read uid_bytes {:x?}",
                     anticollision_cycle_counter, uid_bytes
                 );
@@ -586,7 +583,7 @@ where
                 let end = tx_bytes as usize + if tx_last_bits > 0 { 1 } else { 0 };
                 tx[1] = (tx_bytes << 4) + tx_last_bits;
 
-                debug!(
+                log::debug!(
                     "known_bits: {}, end: {}, tx_bytes: {}, tx_last_bits: {}",
                     known_bits, end,tx_bytes, tx_last_bits, 
                 );
@@ -597,16 +594,16 @@ where
                 match self.anticollision_transmit::<5>(&tx[0..end], tx_bytes as usize, tx_last_bits, true) {
                     Ok(fifo_data) => {
                         fifo_data.copy_bits_to(&mut tx[2..=6], known_bits);
-                        debug!("Read full response {:?}", fifo_data);
+                        log::debug!("Read full response {:?}", fifo_data);
                         break 'anticollision;
                     }
                     Err(Error::Collision) => {
                         let coll_reg = self.read_register(Register::CollisionDisplayRegister)?;
-                        debug!("coll_reg: 0b{:08b}", coll_reg);
+                        log::debug!("coll_reg: 0b{:08b}", coll_reg);
 
                         let bytes_before_coll = ((coll_reg >> 4) & 0b1111) - 2;
                         let bits_before_coll = (coll_reg >> 1) & 0b111;
-                        debug!(
+                        log::debug!(
                             "bytes_before_coll: {}, bits_before_coll: {}",
                             bytes_before_coll, bits_before_coll
                         );
@@ -619,7 +616,7 @@ where
                         }
 
                         let fifo_data = self.fifo_data::<5>()?;
-                        debug!("Read partial response {:?}", fifo_data);
+                        log::debug!("Read partial response {:?}", fifo_data);
 
                         fifo_data.copy_bits_to(&mut tx[2..=6], known_bits);
                         known_bits = coll_pos;
@@ -633,7 +630,7 @@ where
                         tx[index] |= 1 << check_bit;
                     }
                     Err(Error::Timeout) => {
-                        debug!("Timeout anticollision");
+                        log::debug!("Timeout anticollision");
                         return Err(Error::Timeout);
                     }
                     Err(e) => return Err(e),
@@ -786,7 +783,7 @@ where
     }
 
     pub fn execute_command(&mut self, command: Command) -> Result<(), Error<SPICS::SpiError, OPE>> {
-        debug!("Executing command: {:?}", command);
+        log::debug!("Executing command: {:?}", command);
         self.write(&[command.command_pattern()])
     }
 
@@ -795,7 +792,7 @@ where
         reg: Register,
         val: u8,
     ) -> Result<(), Error<SPICS::SpiError, OPE>> {
-        debug!("Write register {:?} value: 0b{:08b}", reg, val);
+        log::debug!("Write register {:?} value: 0b{:08b}", reg, val);
         self.write(&[reg.write_address(), val])
     }
 
@@ -805,7 +802,7 @@ where
         self.spi_with_custom_cs
             .with_cs_low(&mut self.cs, |spi| {
                 let buffer = spi.transfer(&mut buffer)?;
-                debug!(
+                log::debug!(
                     "Read register {:?} got value value: 0b{:08b}",
                     reg, buffer[1]
                 );
@@ -829,14 +826,14 @@ where
                     *slot = spi.transfer(&mut [0])?[0];
                 }
 
-                debug!("Read from fifo: {:x?}", buffer);
+                log::debug!("Read from fifo: {:x?}", buffer);
                 Ok(&*buffer)
             })
             .map_err(Error::SpiWithCS)
     }
 
     fn write_fifo(&mut self, bytes: &[u8]) -> Result<(), Error<SPICS::SpiError, OPE>> {
-        debug!("Write in fifo: {:x?}", bytes);
+        log::debug!("Write in fifo: {:x?}", bytes);
         self.spi_with_custom_cs
             .with_cs_low(&mut self.cs, |spi| {
                 // initiate fifo write
@@ -854,7 +851,7 @@ where
         mask: InterruptFlags,
         timeout_in_ms: u16,
     ) -> Result<InterruptFlags, Error<SPICS::SpiError, OPE>> {
-        debug!("Wait for interrupt {}ms", timeout_in_ms);
+        log::debug!("Wait for interrupt {}ms", timeout_in_ms);
         let mut i = 0;
         let mut interrupt = 0u32;
         loop {
