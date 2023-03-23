@@ -1,4 +1,4 @@
-#![cfg_attr(not(feature = "std"), no_std)]
+// #![cfg_attr(not(feature = "std"), no_std)]
 
 extern crate delog;
 #[macro_use]
@@ -8,7 +8,6 @@ use embedded_hal as hal;
 use hal::blocking::delay;
 use hal::blocking::spi;
 use hal::digital::v2::InputPin;
-use hal::digital::v2::OutputPin;
 use hal::prelude::_embedded_hal_blocking_spi_Transfer;
 use hal::prelude::_embedded_hal_blocking_spi_Write;
 
@@ -22,23 +21,22 @@ pub mod register;
 delog::generate_macros!();
 
 #[derive(Debug)]
-pub enum SPIOrCSError<E, OPE> {
+pub enum SPIOrCSError<E, CSE> {
     SPI(E),
-    CS(OPE),
+    CS(CSE),
 }
 
 pub trait SpiWithCustomCS {
     type Spi: spi::Transfer<u8, Error = Self::SpiError> + spi::Write<u8, Error = Self::SpiError>;
     type SpiError;
+    type ChipSelectError;
 
-    fn with_cs_low<F, T, CS, OPE>(
+    fn with_chip_selected<F, T>(
         &mut self,
-        cs: &mut CS,
         f: F,
-    ) -> Result<T, SPIOrCSError<Self::SpiError, OPE>>
+    ) -> Result<T, SPIOrCSError<Self::SpiError, Self::ChipSelectError>>
     where
-        F: FnOnce(&mut Self::Spi) -> Result<T, Self::SpiError>,
-        CS: OutputPin<Error = OPE>;
+        F: FnOnce(&mut Self::Spi) -> Result<T, Self::SpiError>;
 }
 
 /// Answer To reQuest A
@@ -46,7 +44,7 @@ pub struct AtqA {
     pub bytes: [u8; 2],
 }
 
-#[derive(Hash, Eq, PartialEq)]
+#[derive(Hash, Eq, PartialEq, Clone)]
 pub enum Uid {
     /// Single sized UID, 4 bytes long
     Single(GenericUid<4>),
@@ -66,7 +64,7 @@ impl Uid {
     }
 }
 
-#[derive(Hash, Eq, PartialEq)]
+#[derive(Hash, Eq, PartialEq, Clone)]
 pub struct GenericUid<const T: usize>
 where
     [u8; T]: Sized,
@@ -119,53 +117,49 @@ impl<const L: usize> FifoData<L> {
     }
 }
 
-pub struct ST25R3911B<SPICS, CS, INTR, DELAY> {
+pub struct ST25R3911B<SPICS, INTR, DELAY> {
     spi_with_custom_cs: SPICS,
-    // Chip select pin
-    cs: CS,
     /// Interrupt pin
     intr: INTR,
     delay: DELAY,
     interrupt_mask: u32,
 }
 
-impl<OPE, CS, INTR, SPICS, DELAY> ST25R3911B<SPICS, CS, INTR, DELAY>
+impl<OPE, INTR, SPICS, DELAY> ST25R3911B<SPICS, INTR, DELAY>
 where
     SPICS: SpiWithCustomCS,
-    CS: OutputPin<Error = OPE>,
     INTR: InputPin<Error = OPE>,
     DELAY: delay::DelayMs<u16>,
 {
     pub fn new(
         spi_with_custom_cs: SPICS,
-        cs: CS,
         intr: INTR,
         delay: DELAY,
-    ) -> Result<Self, Error<SPICS::SpiError, OPE>> {
-        let mut st25r3911b = Self {
+    ) -> Self {
+        Self {
             spi_with_custom_cs,
-            cs,
             intr,
             delay,
             interrupt_mask: 0,
-        };
-        debug!("New ST25R3911B driver instance");
-        st25r3911b.initialize_chip()?;
-
-        st25r3911b.check_chip_id()?;
-
-        // Set FIFO Water Levels to be used
-        st25r3911b.modify_register(Register::IOConfiguration1, 0, 0b0011_0000)?;
-
-        // Always have CRC in FIFO upon reception and Enable External Field Detector
-        st25r3911b.modify_register(Register::AuxiliaryRegister, 0, 1 << 6 | 1 << 4)?;
-
-        st25r3911b.calibrate()?;
-
-        Ok(st25r3911b)
+        }
     }
 
-    pub fn initialize_chip(&mut self) -> Result<(), Error<SPICS::SpiError, OPE>> {
+    pub fn initialize_chip(&mut self) -> Result<(), Error<SPICS::SpiError, SPICS::ChipSelectError, OPE>> {
+        // reset
+        self.reset()?;
+
+        self.check_chip_id()?;
+
+        // Set FIFO Water Levels to be used
+        // self.modify_register(Register::IOConfiguration1, 0, 0b0011_0000)?;
+
+        self.write_register(Register::IOConfiguration1, 0b0011_1000)?;
+
+        // Always have CRC in FIFO upon reception and Enable External Field Detector
+        self.modify_register(Register::AuxiliaryRegister, 0, 1 << 6 | 1 << 4)?;
+
+        self.calibrate()?;
+
         // reset
         self.reset()?;
         // Set Operation Control Register to default value
@@ -201,7 +195,7 @@ where
         Ok(())
     }
 
-    fn check_chip_id(&mut self) -> Result<(), Error<SPICS::SpiError, OPE>> {
+    fn check_chip_id(&mut self) -> Result<(), Error<SPICS::SpiError, SPICS::ChipSelectError, OPE>> {
         let identity = self.read_register(Register::ICIdentity)?;
 
         if identity & 0b11111000 != 8 {
@@ -210,7 +204,7 @@ where
         Ok(())
     }
 
-    fn calibrate(&mut self) -> Result<(), Error<SPICS::SpiError, OPE>> {
+    fn calibrate(&mut self) -> Result<(), Error<SPICS::SpiError, SPICS::ChipSelectError, OPE>> {
         self.adjust_regulators()?;
 
         // REMARK: Silicon workaround ST25R3911 Errata #1.5
@@ -224,7 +218,7 @@ where
         Ok(())
     }
 
-    fn adjust_regulators(&mut self) -> Result<(), Error<SPICS::SpiError, OPE>> {
+    fn adjust_regulators(&mut self) -> Result<(), Error<SPICS::SpiError, SPICS::ChipSelectError, OPE>> {
         // Reset logic and set regulated voltages to be defined by result of Adjust Regulators command
         self.modify_register(Register::RegulatorVoltageControlRegister, 0, 1 << 7)?;
         self.modify_register(Register::RegulatorVoltageControlRegister, 1 << 7, 0)?;
@@ -233,16 +227,16 @@ where
         Ok(())
     }
 
-    fn calibrate_antenna(&mut self) -> Result<(), Error<SPICS::SpiError, OPE>> {
+    fn calibrate_antenna(&mut self) -> Result<(), Error<SPICS::SpiError, SPICS::ChipSelectError, OPE>> {
         self.execute_command(Command::CalibrateAntenna)?;
         Ok(())
     }
 
-    pub fn reset(&mut self) -> Result<(), Error<SPICS::SpiError, OPE>> {
+    pub fn reset(&mut self) -> Result<(), Error<SPICS::SpiError, SPICS::ChipSelectError, OPE>> {
         self.execute_command(Command::SetDefault)
     }
 
-    pub fn field_on(&mut self) -> Result<(), Error<SPICS::SpiError, OPE>> {
+    pub fn field_on(&mut self) -> Result<(), Error<SPICS::SpiError, SPICS::ChipSelectError, OPE>> {
         // set recommended threshold
         self.modify_register(Register::ExternalFieldDetectorThresholdRegister, 0x0F, 0x07)?;
         // set no peer threshold
@@ -272,7 +266,7 @@ where
     }
 
     /// Sends command to enter HALT state
-    pub fn hlta(&mut self) -> Result<(),  Error<SPICS::SpiError, OPE>> {
+    pub fn hlta(&mut self) -> Result<(),  Error<SPICS::SpiError, SPICS::ChipSelectError, OPE>> {
         let buffer: [u8; 2] = [picc::Command::HLTA as u8, 0];
 
         // The standard says:
@@ -288,19 +282,19 @@ where
     }
 
     /// Sends a Wake UP type A to nearby PICCs
-    pub fn wupa(&mut self) -> Result<Option<AtqA>, Error<SPICS::SpiError, OPE>> {
+    pub fn wupa(&mut self) -> Result<Option<AtqA>, Error<SPICS::SpiError, SPICS::ChipSelectError, OPE>> {
         debug!("wupa");
 
         self.process_reqa_wupa(Command::TransmitWUPA)
     }
     /// Sends a REQuest type A to nearby PICCs
-    pub fn reqa(&mut self) -> Result<Option<AtqA>, Error<SPICS::SpiError, OPE>> {
+    pub fn reqa(&mut self) -> Result<Option<AtqA>, Error<SPICS::SpiError, SPICS::ChipSelectError, OPE>> {
         debug!("reqa");
 
         self.process_reqa_wupa(Command::TransmitREQA)
     }
 
-    fn process_reqa_wupa(&mut self, cmd: Command) -> Result<Option<AtqA>, Error<SPICS::SpiError, OPE>> {
+    fn process_reqa_wupa(&mut self, cmd: Command) -> Result<Option<AtqA>, Error<SPICS::SpiError, SPICS::ChipSelectError, OPE>> {
         debug!("reqa");
 
         // Enable anti collision to recognize collision in first byte of SENS_REQ
@@ -444,7 +438,8 @@ where
         tx_bytes: usize,
         tx_bits: u8,
         without_crc: bool,
-    ) -> Result<FifoData<RX>, Error<SPICS::SpiError, OPE>> {
+    ) -> Result<FifoData<RX>, Error<SPICS::SpiError, SPICS::ChipSelectError, OPE>> {
+        // println!("anticollision_transmit without_crc {}", without_crc);
         match without_crc {
             true => {
                 self.modify_register(Register::ISO1443AAndNFC106kbsRegister, 0, 1 << 0)?;
@@ -489,6 +484,8 @@ where
         self.clear_interrupts()?;
         // Reset RX Gain
         self.execute_command(Command::ResetRxGain)?;
+
+        self.delay.delay_ms(1);
 
         let interrupt_flags = InterruptFlags::END_OF_TRANSMISSION
             | InterruptFlags::BIT_COLLISION
@@ -553,7 +550,7 @@ where
         self.fifo_data()
     }
 
-    pub fn select(&mut self) -> Result<Uid, Error<SPICS::SpiError, OPE>> {
+    pub fn select(&mut self) -> Result<Uid, Error<SPICS::SpiError, SPICS::ChipSelectError, OPE>> {
         debug!("Select");
         let mut cascade_level: u8 = 0;
         let mut uid_bytes: [u8; 10] = [0u8; 10];
@@ -685,7 +682,7 @@ where
         }
     }
 
-    fn fifo_data<const RX: usize>(&mut self) -> Result<FifoData<RX>, Error<SPICS::SpiError, OPE>> {
+    fn fifo_data<const RX: usize>(&mut self) -> Result<FifoData<RX>, Error<SPICS::SpiError, SPICS::ChipSelectError, OPE>> {
         let mut buffer = [0u8; RX];
         let mut valid_bytes: usize = 0;
         let mut valid_bits = 0;
@@ -716,7 +713,7 @@ where
         })
     }
 
-    pub fn clear_interrupts(&mut self) -> Result<(), Error<SPICS::SpiError, OPE>> {
+    pub fn clear_interrupts(&mut self) -> Result<(), Error<SPICS::SpiError, SPICS::ChipSelectError, OPE>> {
         self.read_register(Register::MainInterruptRegister)?;
         self.read_register(Register::TimerAndNFCInterruptRegister)?;
         self.read_register(Register::ErrorAndWakeUpInterruptRegister)?;
@@ -726,14 +723,14 @@ where
     pub fn enable_interrupts(
         &mut self,
         flags: InterruptFlags,
-    ) -> Result<(), Error<SPICS::SpiError, OPE>> {
+    ) -> Result<(), Error<SPICS::SpiError, SPICS::ChipSelectError, OPE>> {
         self.modify_interrupt(flags.bits(), 0)
     }
 
     pub fn disable_interrupts(
         &mut self,
         flags: InterruptFlags,
-    ) -> Result<(), Error<SPICS::SpiError, OPE>> {
+    ) -> Result<(), Error<SPICS::SpiError, SPICS::ChipSelectError, OPE>> {
         self.modify_interrupt(0, flags.bits())
     }
 
@@ -741,7 +738,7 @@ where
         &mut self,
         clr_mask: u32,
         set_mask: u32,
-    ) -> Result<(), Error<SPICS::SpiError, OPE>> {
+    ) -> Result<(), Error<SPICS::SpiError, SPICS::ChipSelectError, OPE>> {
         let old_mask = self.interrupt_mask;
         let new_mask = (!old_mask & clr_mask) | (old_mask & clr_mask);
 
@@ -777,7 +774,7 @@ where
         reg: Register,
         clr_mask: u8,
         set_mask: u8,
-    ) -> Result<(), Error<SPICS::SpiError, OPE>> {
+    ) -> Result<(), Error<SPICS::SpiError, SPICS::ChipSelectError, OPE>> {
         let mut value = self.read_register(reg)?;
         value &= !clr_mask;
         value |= set_mask;
@@ -785,7 +782,7 @@ where
         Ok(())
     }
 
-    pub fn execute_command(&mut self, command: Command) -> Result<(), Error<SPICS::SpiError, OPE>> {
+    pub fn execute_command(&mut self, command: Command) -> Result<(), Error<SPICS::SpiError, SPICS::ChipSelectError, OPE>> {
         debug!("Executing command: {:?}", command);
         self.write(&[command.command_pattern()])
     }
@@ -794,16 +791,16 @@ where
         &mut self,
         reg: Register,
         val: u8,
-    ) -> Result<(), Error<SPICS::SpiError, OPE>> {
+    ) -> Result<(), Error<SPICS::SpiError, SPICS::ChipSelectError, OPE>> {
         debug!("Write register {:?} value: 0b{:08b}", reg, val);
         self.write(&[reg.write_address(), val])
     }
 
-    pub fn read_register(&mut self, reg: Register) -> Result<u8, Error<SPICS::SpiError, OPE>> {
+    pub fn read_register(&mut self, reg: Register) -> Result<u8, Error<SPICS::SpiError, SPICS::ChipSelectError, OPE>> {
         let mut buffer = [reg.read_address(), 0];
 
         self.spi_with_custom_cs
-            .with_cs_low(&mut self.cs, |spi| {
+            .with_chip_selected(|spi| {
                 let buffer = spi.transfer(&mut buffer)?;
                 debug!(
                     "Read register {:?} got value value: 0b{:08b}",
@@ -818,9 +815,9 @@ where
     fn read_fifo<'b>(
         &mut self,
         buffer: &'b mut [u8],
-    ) -> Result<&'b [u8], Error<SPICS::SpiError, OPE>> {
+    ) -> Result<&'b [u8], Error<SPICS::SpiError, SPICS::ChipSelectError, OPE>> {
         self.spi_with_custom_cs
-            .with_cs_low(&mut self.cs, move |spi| {
+            .with_chip_selected(move |spi| {
                 // initiate fifo read
                 spi.transfer(&mut [0b10111111])?;
 
@@ -835,10 +832,10 @@ where
             .map_err(Error::SpiWithCS)
     }
 
-    fn write_fifo(&mut self, bytes: &[u8]) -> Result<(), Error<SPICS::SpiError, OPE>> {
+    fn write_fifo(&mut self, bytes: &[u8]) -> Result<(), Error<SPICS::SpiError, SPICS::ChipSelectError, OPE>> {
         debug!("Write in fifo: {:x?}", bytes);
         self.spi_with_custom_cs
-            .with_cs_low(&mut self.cs, |spi| {
+            .with_chip_selected(|spi| {
                 // initiate fifo write
                 spi.transfer(&mut [0b10000000])?;
 
@@ -853,7 +850,7 @@ where
         &mut self,
         mask: InterruptFlags,
         timeout_in_ms: u16,
-    ) -> Result<InterruptFlags, Error<SPICS::SpiError, OPE>> {
+    ) -> Result<InterruptFlags, Error<SPICS::SpiError, SPICS::ChipSelectError, OPE>> {
         debug!("Wait for interrupt {}ms", timeout_in_ms);
         let mut i = 0;
         let mut interrupt = 0u32;
@@ -881,9 +878,9 @@ where
         Err(Error::InterruptTimeout)
     }
 
-    fn write(&mut self, bytes: &[u8]) -> Result<(), Error<SPICS::SpiError, OPE>> {
+    fn write(&mut self, bytes: &[u8]) -> Result<(), Error<SPICS::SpiError, SPICS::ChipSelectError, OPE>> {
         self.spi_with_custom_cs
-            .with_cs_low(&mut self.cs, |spi| {
+            .with_chip_selected(|spi| {
                 spi.write(bytes)?;
 
                 Ok(())
@@ -893,8 +890,8 @@ where
 }
 
 #[derive(Debug)]
-pub enum Error<E, OPE> {
-    SpiWithCS(SPIOrCSError<E, OPE>),
+pub enum Error<E, CSE, OPE> {
+    SpiWithCS(SPIOrCSError<E, CSE>),
     InterruptPin(OPE),
 
     /// Set when Calibrate antenna sequence was not able to adjust resonance
