@@ -1,8 +1,6 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 
 extern crate delog;
-#[macro_use]
-extern crate bitflags;
 
 use embedded_hal as hal;
 

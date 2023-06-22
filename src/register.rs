@@ -1,3 +1,5 @@
+use bitflags::bitflags;
+
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 #[repr(u8)]
@@ -104,6 +106,7 @@ impl Register {
 }
 
 bitflags! {
+    #[derive(Debug, Clone, Copy)]
     pub struct InterruptFlags: u32 {
         const MASK_ALL = 0xFFFFFF; // Disable all interrupts
         const ERROR = 0b000_0001;
