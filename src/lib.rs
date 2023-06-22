@@ -10,9 +10,9 @@ use hal::spi;
 use command::Command;
 use register::{InterruptFlags, Register};
 
-pub mod command;
+mod command;
 mod picc;
-pub mod register;
+mod register;
 
 /// Answer To reQuest A
 pub struct AtqA {
@@ -156,7 +156,7 @@ where
         // Set bit rate to 106 kbits/s
         self.write_register(Register::BitRateDefinitionRegister, 0)?;
 
-        // Presets RX and TX configuration 
+        // Presets RX and TX configuration
         self.execute_command(Command::AnalogPreset)?;
 
         self.check_chip_id()?;
@@ -541,8 +541,7 @@ where
                 anticollision_cycle_counter += 1;
                 debug!(
                     "Stating anticollision loop nr {} read uid_bytes {=[?]:x}",
-                    anticollision_cycle_counter,
-                    uid_bytes
+                    anticollision_cycle_counter, uid_bytes
                 );
 
                 if anticollision_cycle_counter > 32 {
@@ -555,16 +554,18 @@ where
 
                 debug!(
                     "known_bits: {}, end: {}, tx_bytes: {}, tx_last_bits: {}",
-                    known_bits,
-                    end,
-                    tx_bytes,
-                    tx_last_bits,
+                    known_bits, end, tx_bytes, tx_last_bits,
                 );
 
                 // Tell transmit the only send `tx_last_bits` of the last byte
                 // and also to put the first received bit at location `tx_last_bits`.
                 // This makes it easier to append the received bits to the uid (in `tx`).
-                match self.anticollision_transmit::<5>(&tx[0..end], tx_bytes as usize, tx_last_bits, true) {
+                match self.anticollision_transmit::<5>(
+                    &tx[0..end],
+                    tx_bytes as usize,
+                    tx_last_bits,
+                    true,
+                ) {
                     Ok(fifo_data) => {
                         fifo_data.copy_bits_to(&mut tx[2..=6], known_bits);
                         debug!("Read full response {:?}", fifo_data);
@@ -677,14 +678,13 @@ where
                 if fifo_reg2 & (7 << 1 | 1 << 4) != 0 {
                     valid_bits = (fifo_reg2 & (7 << 1)) >> 1;
                 }
-
             }
         }
 
         Ok(FifoData {
             buffer,
             valid_bytes,
-            valid_bits
+            valid_bits,
         })
     }
 

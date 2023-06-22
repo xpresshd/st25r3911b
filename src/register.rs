@@ -120,7 +120,8 @@ bitflags! {
 
         // Timer and NFC Interrupt Register
         const INITIATOR_BIT_RATE_WAS_RECOGNIZED = 0b0000_0001 << 8;
-        /// An external field was not detected during RF Collision Avoidance, field was switched on, IRQ is sent after minimum guard time according to NFCIP-1
+        /// An external field was not detected during RF Collision Avoidance,
+        /// field was switched on, IRQ is sent after minimum guard time according to NFCIP-1
         const MINIMUM_GUARD_TIME_EXPIRE = 0b0000_0010 << 8;
         /// An external field was detected during RF Collision Avoidance
         const FIELD_COLLISION_DETECTED = 0b0000_0100 << 8;
