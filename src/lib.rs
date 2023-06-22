@@ -1,9 +1,8 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 
-extern crate delog;
-
 use embedded_hal as hal;
 
+use defmt::debug;
 use hal::delay;
 use hal::digital::InputPin;
 use hal::spi;
@@ -14,9 +13,6 @@ use register::{InterruptFlags, Register};
 pub mod command;
 mod picc;
 pub mod register;
-
-delog::generate_macros!();
-
 
 /// Answer To reQuest A
 pub struct AtqA {
@@ -544,8 +540,9 @@ where
             'anticollision: loop {
                 anticollision_cycle_counter += 1;
                 debug!(
-                    "Stating anticollision loop nr {} read uid_bytes {:x?}",
-                    anticollision_cycle_counter, uid_bytes
+                    "Stating anticollision loop nr {} read uid_bytes {=[?]:x}",
+                    anticollision_cycle_counter,
+                    uid_bytes
                 );
 
                 if anticollision_cycle_counter > 32 {
@@ -558,7 +555,10 @@ where
 
                 debug!(
                     "known_bits: {}, end: {}, tx_bytes: {}, tx_last_bits: {}",
-                    known_bits, end,tx_bytes, tx_last_bits, 
+                    known_bits,
+                    end,
+                    tx_bytes,
+                    tx_last_bits,
                 );
 
                 // Tell transmit the only send `tx_last_bits` of the last byte
