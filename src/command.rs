@@ -1,5 +1,6 @@
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[repr(u8)]
 pub enum Command {
     /// Puts the st25r3911b in default state (same as after power-up)

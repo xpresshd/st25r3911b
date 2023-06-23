@@ -2,6 +2,7 @@ use bitflags::bitflags;
 
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[repr(u8)]
 pub enum Register {
     // IO Configuration
