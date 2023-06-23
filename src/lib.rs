@@ -61,6 +61,7 @@ impl<const T: usize> GenericUid<T> {
 }
 
 #[derive(Debug)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct FifoData<const L: usize> {
     /// The contents of the FIFO buffer
     buffer: [u8; L],
@@ -222,7 +223,7 @@ where
         self.disable_interrupts(intr_flags)?;
 
         let intr = intr_res?;
-        debug!("intr: {:?}", intr);
+        debug!("intr: {:?}", defmt::Debug2Format(&intr));
         if intr.contains(InterruptFlags::MINIMUM_GUARD_TIME_EXPIRE) {
             // Also enable Receiver
             self.modify_register(Register::OperationControlRegister, 0, 1 << 6 | 1 << 3)?;
@@ -339,7 +340,7 @@ where
         self.disable_interrupts(interrupt_flags)?;
         let intr = intr_res?;
 
-        debug!("intr: {:?}", intr);
+        debug!("intr: {:?}", defmt::Debug2Format(&intr));
 
         // Start of TransceiveRx
 
@@ -497,7 +498,7 @@ where
         self.disable_interrupts(interrupt_flags)?;
         let intr = intr_res?;
 
-        debug!("intr: {:?}", intr);
+        debug!("intr: {:?}", defmt::Debug2Format(&intr));
 
         if intr.contains(InterruptFlags::BIT_COLLISION) {
             return Err(Error::Collision);
