@@ -143,3 +143,39 @@ bitflags! {
         const CRC_ERROR = 0b1000_0000 << 16;
     }
 }
+
+/// The operation mode of the chip, i.e. the protocol that is used.
+pub enum OperationMode {
+    /// ISO14443A initiator
+    PollNFCA,
+    /// ISO14443B initiator
+    PollNFCB,
+    /// FeliCa™ initiator
+    PollNFCF,
+    /// NFCA Type 1 Tag initiator
+    PollTopaz,
+    /// NFCIP1 active communication initiator mode with
+    /// NFC Automatic Response RF Collision Avoidance enabled
+    PollActiveP2P,
+    /// NFCIP1 active communication initiator mode with
+    /// NFC Automatic Response RF Collision Avoidance enabled
+    ListenActiveP2P,
+}
+
+/// The speed to be used for transmission or reception.
+pub enum Bitrate {
+    /// Carrier frequency / 128 = ~106 kbit/s
+    Kb106,
+    /// Carrier frequency / 64 = ~212 kbit/s
+    Kb212,
+    /// Carrier frequency / 32 = ~424 kbit/s
+    Kb424,
+    /// Carrier frequency / 16 = ~848 kbit/s
+    Kb848,
+    /// Carrier frequency / 8 = ~1695 kbit/s
+    Kb1695,
+    /// Carrier frequency / 4 = ~3390 kbit/s
+    Kb3390,
+    /// Carrier frequency / 2 = ~6780 kbit/s
+    Kb6780,
+}

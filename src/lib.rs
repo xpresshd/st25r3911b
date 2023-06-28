@@ -8,7 +8,7 @@ use hal::digital::InputPin;
 use hal::spi;
 
 use command::Command;
-use register::{InterruptFlags, Register};
+use register::{Bitrate, InterruptFlags, OperationMode, Register};
 
 mod command;
 mod picc;
@@ -134,8 +134,8 @@ where
         self.reset()?;
         // Set Operation Control Register to default value
         self.write_register(Register::OperationControlRegister, 0)?;
-        // Set power supply 3.3V and enable pull downs on miso line
-        self.write_register(Register::IOConfiguration2, 0b1001_1000)?;
+        // Enable pull downs on miso line
+        self.write_register(Register::IOConfiguration2, 0b0001_1000)?;
 
         // after reset all interrupts are enabled. so disable them at first
         self.disable_interrupts(InterruptFlags::MASK_ALL)?;
@@ -148,14 +148,18 @@ where
         self.wait_for_interrupt(InterruptFlags::OSCILLATOR_FREQUENCY_STABLE, 10)?;
         self.disable_interrupts(InterruptFlags::OSCILLATOR_FREQUENCY_STABLE)?;
 
+        // TODO: either let user specify or measure with `MeasurePowerSupply` direct command.
+        // Set power supply voltage range
+        // self.modify_register(Register::IOConfiguration2, 1 << 7, ...)?;
+
         // Make sure Transmitter and Receiver are disabled
         self.modify_register(Register::OperationControlRegister, 1 << 6 | 1 << 3, 0)?;
 
         // Set NFC to ISO14443A initiator
-        self.write_register(Register::ModeDefinitionRegister, 1 << 3)?;
+        self.set_mode(OperationMode::PollNFCA)?;
 
         // Set bit rate to 106 kbits/s
-        self.write_register(Register::BitRateDefinitionRegister, 0)?;
+        self.set_bitrate(Bitrate::Kb106, Bitrate::Kb106)?;
 
         // Presets RX and TX configuration
         self.execute_command(Command::AnalogPreset)?;
@@ -206,6 +210,45 @@ where
         self.execute_command(Command::SetDefault)
     }
 
+    fn set_mode(&mut self, mode: OperationMode) -> Result<(), Error<SPI::Error, IRQ::Error>> {
+        let reg_val = match mode {
+            OperationMode::PollNFCA => 0b0000_1000,
+            OperationMode::PollNFCB => 0b0001_0000,
+            OperationMode::PollNFCF => 0b0001_1000,
+            OperationMode::PollTopaz => 0b0010_0000,
+            OperationMode::PollActiveP2P => 0b0000_0001,
+            OperationMode::ListenActiveP2P => 0b1000_1001,
+        };
+
+        self.write_register(Register::ModeDefinitionRegister, reg_val)
+    }
+
+    fn set_bitrate(
+        &mut self,
+        tx_bitrate: Bitrate,
+        rx_bitrate: Bitrate,
+    ) -> Result<(), Error<SPI::Error, IRQ::Error>> {
+        let tx_val = match tx_bitrate {
+            Bitrate::Kb106 => 0b0000_0000,
+            Bitrate::Kb212 => 0b0001_0000,
+            Bitrate::Kb424 => 0b0010_0000,
+            Bitrate::Kb848 => 0b0011_0000,
+            Bitrate::Kb1695 => 0b0100_0000,
+            Bitrate::Kb3390 => 0b0101_0000,
+            Bitrate::Kb6780 => 0b0110_0000,
+        };
+        let rx_val = match rx_bitrate {
+            Bitrate::Kb106 => 0b0000_0000,
+            Bitrate::Kb212 => 0b0000_0001,
+            Bitrate::Kb424 => 0b0000_0010,
+            Bitrate::Kb848 => 0b0000_0011,
+            Bitrate::Kb1695 => 0b0000_0100,
+            Bitrate::Kb3390 => 0b0000_0101,
+            Bitrate::Kb6780 => 0b0000_0110,
+        };
+
+        self.write_register(Register::BitRateDefinitionRegister, tx_val | rx_val)
+    }
     pub fn field_on(&mut self) -> Result<(), Error<SPI::Error, IRQ::Error>> {
         // set recommended threshold
         self.modify_register(Register::ExternalFieldDetectorThresholdRegister, 0x0F, 0x07)?;
@@ -257,6 +300,7 @@ where
 
         self.process_reqa_wupa(Command::TransmitWUPA)
     }
+
     /// Sends a REQuest type A to nearby PICCs
     pub fn reqa(&mut self) -> Result<Option<AtqA>, Error<SPI::Error, IRQ::Error>> {
         debug!("reqa");
