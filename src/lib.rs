@@ -116,7 +116,8 @@ where
         debug!("New ST25R3911B driver instance");
         st25r3911b.initialize_chip()?;
 
-        st25r3911b.check_chip_id()?;
+        let silicon_rev = st25r3911b.check_chip_id()?;
+        defmt::info!("With silicon revision {=u8:x}", silicon_rev);
 
         // Set FIFO Water Levels to be used
         st25r3911b.modify_register(Register::IOConfiguration1, 0, 0b0011_0000)?;
@@ -164,18 +165,18 @@ where
         // Presets RX and TX configuration
         self.execute_command(Command::AnalogPreset)?;
 
-        self.check_chip_id()?;
-
         Ok(())
     }
 
-    fn check_chip_id(&mut self) -> Result<(), Error<SPI::Error, IRQ::Error>> {
+    /// Read the IC identity register and verify this is a ST25R3911B.
+    /// Returns the silicon revision or an `InvalidDevice` error.
+    pub fn check_chip_id(&mut self) -> Result<u8, Error<SPI::Error, IRQ::Error>> {
         let identity = self.read_register(Register::ICIdentity)?;
 
-        if identity & 0b11111000 != 8 {
+        if identity & 0b1111_1000 != 8 {
             return Err(Error::InvalidDevice);
         }
-        Ok(())
+        Ok(identity & 0b0000_0111)
     }
 
     fn calibrate(&mut self) -> Result<(), Error<SPI::Error, IRQ::Error>> {
