@@ -1,5 +1,6 @@
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[repr(u8)]
 pub enum Command {
     /// Puts the st25r3911b in default state (same as after power-up)
@@ -16,7 +17,7 @@ pub enum Command {
     TransmitWUPA = 0xC7,
     /// Performs initial RF collision avoidance and switch on the field
     NFCInitialFieldOn = 0xC8,
-    /// Performs response RF collision avoidance and switch on the field 
+    /// Performs response RF collision avoidance and switch on the field
     NFCResponseFieldOn = 0xC9,
     /// Performs response RF collision avoidance with n=0 and switch on the field
     NFCResponseFieldOnWithN0 = 0xCA,
@@ -24,7 +25,7 @@ pub enum Command {
     GoToNormalNFCMode = 0xCB,
     /// Presets Rx and Tx configuration based on state of Mode definition register and Bit rate definition register
     AnalogPreset = 0xCC,
-    /// Receive after this command is ignored 
+    /// Receive after this command is ignored
     MaskReceiveData = 0xD0,
     /// Receive data following this command is normally processed (this command has priority over internal mask receive timer)
     UnmaskReceiveData = 0xD1,
@@ -49,17 +50,17 @@ pub enum Command {
     TransparentMode = 0xDC,
     /// Calibrates capacitive sensor
     CalibrateCapacitiveSensor = 0xDD,
-    /// Perform capacitor sensor measurement 
+    /// Perform capacitor sensor measurement
     MeasureCapacitance = 0xDE,
     /// Measure power supply
     MeasurePowerSupply = 0xDF,
-    /// 
+    ///
     StartGeneralPurposeTimer = 0xE0,
-    /// 
+    ///
     StartWakeUpTimer = 0xE1,
-    /// 
+    ///
     StartMaskReceiveTimer = 0xE2,
-    /// 
+    ///
     StartNoResponseTimer = 0xE3,
     /// Enable/W to test registers
     TestAccess = 0xFC,

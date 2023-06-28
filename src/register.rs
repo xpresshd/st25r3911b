@@ -1,5 +1,8 @@
+use bitflags::bitflags;
+
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[repr(u8)]
 pub enum Register {
     // IO Configuration
@@ -104,6 +107,7 @@ impl Register {
 }
 
 bitflags! {
+    #[derive(Debug, Clone, Copy)]
     pub struct InterruptFlags: u32 {
         const MASK_ALL = 0xFFFFFF; // Disable all interrupts
         const ERROR = 0b000_0001;
@@ -117,7 +121,8 @@ bitflags! {
 
         // Timer and NFC Interrupt Register
         const INITIATOR_BIT_RATE_WAS_RECOGNIZED = 0b0000_0001 << 8;
-        /// An external field was not detected during RF Collision Avoidance, field was switched on, IRQ is sent after minimum guard time according to NFCIP-1
+        /// An external field was not detected during RF Collision Avoidance,
+        /// field was switched on, IRQ is sent after minimum guard time according to NFCIP-1
         const MINIMUM_GUARD_TIME_EXPIRE = 0b0000_0010 << 8;
         /// An external field was detected during RF Collision Avoidance
         const FIELD_COLLISION_DETECTED = 0b0000_0100 << 8;
