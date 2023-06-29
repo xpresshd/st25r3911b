@@ -131,6 +131,7 @@ bitflags! {
     }
 }
 
+#[allow(dead_code)]
 /// The operation mode of the chip, i.e. the protocol that is used.
 pub enum OperationMode {
     /// ISO14443A initiator
@@ -149,6 +150,7 @@ pub enum OperationMode {
     ListenActiveP2P,
 }
 
+#[allow(dead_code)]
 /// The speed to be used for transmission or reception.
 pub enum Bitrate {
     /// Carrier frequency / 128 = ~106 kbit/s
