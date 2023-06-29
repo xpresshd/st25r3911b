@@ -2,7 +2,9 @@
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[repr(u8)]
-pub enum Command {
+/// An instruction to the reader to perform a certain action.
+/// This operation is a single-byte value starting with two leading '1' bits (`0b11xx_xxxx`).
+pub enum DirectCommand {
     /// Puts the st25r3911b in default state (same as after power-up)
     SetDefault = 0xC1,
     /// Stops all activities and clears FIFO
@@ -73,16 +75,16 @@ pub enum Command {
     /// Enable/W to test registers
     TestAccess = 0xFC,
 }
-impl From<Command> for u8 {
+impl From<DirectCommand> for u8 {
     #[inline(always)]
-    fn from(variant: Command) -> Self {
+    fn from(variant: DirectCommand) -> Self {
         variant as _
     }
 }
 
 const C: u8 = (1 << 7) + (1 << 6);
 
-impl Command {
+impl DirectCommand {
     pub fn command_pattern(&self) -> u8 {
         (*self as u8) | C
     }

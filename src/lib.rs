@@ -7,7 +7,7 @@ use hal::delay;
 use hal::digital::InputPin;
 use hal::spi;
 
-use command::Command;
+use command::DirectCommand;
 use register::{Bitrate, InterruptFlags, OperationMode, Register};
 
 mod command;
@@ -168,7 +168,7 @@ where
         self.set_bitrate(Bitrate::Kb106, Bitrate::Kb106)?;
 
         // Presets RX and TX configuration
-        self.execute_command(Command::AnalogPreset)?;
+        self.direct_command(DirectCommand::AnalogPreset)?;
 
         Ok(())
     }
@@ -203,17 +203,17 @@ where
         self.modify_register(Register::RegulatorVoltageControlRegister, 0, 1 << 7)?;
         self.modify_register(Register::RegulatorVoltageControlRegister, 1 << 7, 0)?;
 
-        self.execute_command(Command::AdjustRegulators)?;
+        self.direct_command(DirectCommand::AdjustRegulators)?;
         Ok(())
     }
 
     fn calibrate_antenna(&mut self) -> Result<(), Error<SPI::Error, IRQ::Error>> {
-        self.execute_command(Command::CalibrateAntenna)?;
+        self.direct_command(DirectCommand::CalibrateAntenna)?;
         Ok(())
     }
 
     pub fn reset(&mut self) -> Result<(), Error<SPI::Error, IRQ::Error>> {
-        self.execute_command(Command::SetDefault)
+        self.direct_command(DirectCommand::SetDefault)
     }
 
     fn set_mode(&mut self, mode: OperationMode) -> Result<(), Error<SPI::Error, IRQ::Error>> {
@@ -268,7 +268,7 @@ where
             InterruptFlags::FIELD_COLLISION_DETECTED | InterruptFlags::MINIMUM_GUARD_TIME_EXPIRE;
 
         self.enable_interrupts(intr_flags)?;
-        self.execute_command(Command::NFCInitialFieldOn)?;
+        self.direct_command(DirectCommand::NFCInitialFieldOn)?;
         let intr_res = self.wait_for_interrupt(intr_flags, 10);
         self.disable_interrupts(intr_flags)?;
 
@@ -305,19 +305,19 @@ where
     pub fn wupa(&mut self) -> Result<Option<AtqA>, Error<SPI::Error, IRQ::Error>> {
         debug!("wupa");
 
-        self.process_reqa_wupa(Command::TransmitWUPA)
+        self.process_reqa_wupa(DirectCommand::TransmitWUPA)
     }
 
     /// Sends a REQuest type A to nearby PICCs
     pub fn reqa(&mut self) -> Result<Option<AtqA>, Error<SPI::Error, IRQ::Error>> {
         debug!("reqa");
 
-        self.process_reqa_wupa(Command::TransmitREQA)
+        self.process_reqa_wupa(DirectCommand::TransmitREQA)
     }
 
     fn process_reqa_wupa(
         &mut self,
-        cmd: Command,
+        cmd: DirectCommand,
     ) -> Result<Option<AtqA>, Error<SPI::Error, IRQ::Error>> {
         debug!("reqa");
 
@@ -358,12 +358,12 @@ where
             0,
         )?;
         // Clear FIFO
-        self.execute_command(Command::Clear)?;
+        self.direct_command(DirectCommand::Clear)?;
         // Disable all interrupts
         self.disable_interrupts(InterruptFlags::MASK_ALL)?;
         self.clear_interrupts()?;
         // Reset RX Gain
-        self.execute_command(Command::ResetRxGain)?;
+        self.direct_command(DirectCommand::ResetRxGain)?;
         // End prepare transmission
 
         let interrupt_flags = InterruptFlags::START_OF_RECEIVE
@@ -385,7 +385,7 @@ where
         // Clear nbtx bits before sending WUPA/REQA - otherwise ST25R3911 will report parity error
         self.write_register(Register::NumberOfTransmittedBytesRegister2, 0)?;
 
-        self.execute_command(cmd)?;
+        self.direct_command(cmd)?;
 
         let intr_res = self.wait_for_interrupt(interrupt_flags, 2);
         self.disable_interrupts(interrupt_flags)?;
@@ -501,12 +501,12 @@ where
             0,
         )?;
         // Clear FIFO
-        self.execute_command(Command::Clear)?;
+        self.direct_command(DirectCommand::Clear)?;
         // Disable all interrupts
         self.disable_interrupts(InterruptFlags::MASK_ALL)?;
         self.clear_interrupts()?;
         // Reset RX Gain
-        self.execute_command(Command::ResetRxGain)?;
+        self.direct_command(DirectCommand::ResetRxGain)?;
 
         let interrupt_flags = InterruptFlags::END_OF_TRANSMISSION
             | InterruptFlags::BIT_COLLISION
@@ -539,10 +539,10 @@ where
 
         match without_crc {
             true => {
-                self.execute_command(Command::TransmitWithoutCRC)?;
+                self.direct_command(DirectCommand::TransmitWithoutCRC)?;
             }
             false => {
-                self.execute_command(Command::TransmitWithCRC)?;
+                self.direct_command(DirectCommand::TransmitWithCRC)?;
             }
         }
         let intr_res = self.wait_for_interrupt(interrupt_flags, 2);
@@ -809,9 +809,10 @@ where
         Ok(())
     }
 
-    pub fn execute_command(
+    /// Execute a *direct command*
+    pub fn direct_command(
         &mut self,
-        command: Command,
+        command: DirectCommand,
     ) -> Result<(), Error<SPI::Error, IRQ::Error>> {
         debug!("Executing command: {:?}", command);
         self.spi
