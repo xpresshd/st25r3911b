@@ -23,30 +23,36 @@ pub enum Command {
     NFCResponseFieldOnWithN0 = 0xCA,
     /// Accepted in NFCIP-1 active communication bit rate detection mode
     GoToNormalNFCMode = 0xCB,
-    /// Presets Rx and Tx configuration based on state of Mode definition register and Bit rate definition register
+    /// Presets Rx and Tx configuration based on state of Mode definition register
+    /// and Bit rate definition register
     AnalogPreset = 0xCC,
     /// Receive after this command is ignored
     MaskReceiveData = 0xD0,
-    /// Receive data following this command is normally processed (this command has priority over internal mask receive timer)
+    /// Receive data following this command is normally processed
+    /// (this command has priority over internal mask receive timer)
     UnmaskReceiveData = 0xD1,
-
-    /// Amplitude of signal present on RFI inputs is measured. The result is stored in A/D converter output register
+    /// Amplitude of signal present on RFI inputs is measured.
+    /// The result is stored in A/D converter output register
     MeasureAmplitude = 0xD3,
     /// Performs gain reduction based on the current noise level
     Squelch = 0xD4,
-    /// Clears the current squelch setting and loads the manual gain reduction from Receiver configuration register 1
+    /// Clears the current squelch setting and loads the manual gain reduction
+    /// from Receiver configuration register 1
     ResetRxGain = 0xD5,
     /// Adjusts supply regulators according to the current supply voltage level
     AdjustRegulators = 0xD6,
-    /// Starts sequence which activates the TX, measures the modulation depth and adapts it to comply with the specified modulation depth
+    /// Starts sequence which activates the TX, measures the modulation depth
+    /// and adapts it to comply with the specified modulation depth
     CalibrateModulationDepth = 0xD7,
-    /// Starts the sequence to adjust parallel capacitances connected to TRIMx_y pins so that the antenna LC tank is in resonance
+    /// Starts the sequence to adjust parallel capacitances connected to TRIMx_y pins
+    /// so that the antenna LC tank is in resonance
     CalibrateAntenna = 0xD8,
     /// Measurement of phase difference between the signal on RFO and RFI
     MeasurePhase = 0xD9,
     /// Clears RSSI bits and restarts the measurement
     ClearRSSI = 0xDA,
-    /// Amplitude of signal present on RFI inputs is measured, result is stored in A/D converter output register
+    /// Amplitude of signal present on RFI inputs is measured,
+    /// result is stored in A/D converter output register
     TransparentMode = 0xDC,
     /// Calibrates capacitive sensor
     CalibrateCapacitiveSensor = 0xDD,
@@ -54,13 +60,15 @@ pub enum Command {
     MeasureCapacitance = 0xDE,
     /// Measure power supply
     MeasurePowerSupply = 0xDF,
-    ///
+    /// Start general purpose timer
     StartGeneralPurposeTimer = 0xE0,
-    ///
+    /// Start wake-up timer
     StartWakeUpTimer = 0xE1,
-    ///
+    /// Start mask-receive timer, which blocks the receiver and reception process
+    /// for a configured time after the end of transmission.
     StartMaskReceiveTimer = 0xE2,
-    ///
+    /// Start no-response timer, to observe whether a tag response is detected
+    /// in a configured time after the end of transmission.
     StartNoResponseTimer = 0xE3,
     /// Enable/W to test registers
     TestAccess = 0xFC,
