@@ -7,7 +7,7 @@ use hal::delay;
 use hal::digital::InputPin;
 use hal::spi;
 
-use command::DirectCommand;
+use command::{DirectCommand, FifoOperation, RegisterOperation};
 use register::{Bitrate, InterruptFlags, OperationMode, Register};
 
 mod command;
@@ -825,12 +825,12 @@ where
     ) -> Result<(), Error<SPI::Error, IRQ::Error>> {
         debug!("Write register {:?} value: 0b{:08b}", reg, val);
         self.spi
-            .write(&[reg.write_address(), val])
+            .write(&[RegisterOperation::Write(reg).pattern(), val])
             .map_err(Error::Spi)
     }
 
     pub fn read_register(&mut self, reg: Register) -> Result<u8, Error<SPI::Error, IRQ::Error>> {
-        let address = [reg.read_address()];
+        let address = [RegisterOperation::Read(reg).pattern()];
         let mut value = [0];
 
         let mut operations = [
@@ -845,7 +845,7 @@ where
         &mut self,
         buffer: &'b mut [u8],
     ) -> Result<&'b [u8], Error<SPI::Error, IRQ::Error>> {
-        let fifo_cmd = [0b10111111];
+        let fifo_cmd = [FifoOperation::Read.pattern()];
         let mut operations = [
             spi::Operation::Write(&fifo_cmd),
             spi::Operation::Read(buffer),
@@ -856,7 +856,7 @@ where
 
     fn write_fifo(&mut self, bytes: &[u8]) -> Result<(), Error<SPI::Error, IRQ::Error>> {
         debug!("Write in fifo: {=[?]:x}", bytes);
-        let fifo_cmd = [0b10000000];
+        let fifo_cmd = [FifoOperation::Load.pattern()];
         let mut operations = [
             spi::Operation::Write(&fifo_cmd),
             spi::Operation::Write(bytes),

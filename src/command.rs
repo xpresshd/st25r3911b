@@ -1,3 +1,5 @@
+use crate::register::Register;
+
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -83,7 +85,52 @@ impl From<DirectCommand> for u8 {
 }
 
 impl DirectCommand {
+    /// The bits to be sent for this operation
     pub fn pattern(&self) -> u8 {
         (*self as u8) | 0b1100_0000
+    }
+}
+
+
+#[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+/// An operation performed on one of the registers.
+/// This operation starts with a leading '0' bit (`0b0xxx_xxxx`).
+pub enum RegisterOperation {
+    /// Set the value of a register
+    Write(Register),
+    /// Get the value of a register
+    Read(Register),
+}
+
+impl RegisterOperation {
+    /// The bits to be sent for this operation
+    pub fn pattern(&self) -> u8 {
+        match self {
+            Self::Write(w) => (*w as u8) & 0b0011_1111,
+            Self::Read(r) => ((*r as u8) & 0b0011_1111) | 0b0100_0000,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+/// An operation performed on the 96-byte FIFO,
+/// which contains the data received from the picc or to be transmitted to the picc.
+/// This operation starts with leading '10' bits (`0b10xx_xxxx`).
+pub enum FifoOperation {
+    /// Write one or more bytes to the FIFO
+    Load,
+    /// Read one or more bytes from the FIFO
+    Read,
+}
+
+impl FifoOperation {
+    /// The bits to be sent for this operation
+    pub fn pattern(&self) -> u8 {
+        match self {
+            Self::Load => 0b1000_0000,
+            Self::Read => 0b1011_1111,
+        }
     }
 }

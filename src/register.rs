@@ -93,19 +93,6 @@ impl From<Register> for u8 {
     }
 }
 
-const R: u8 = 1 << 6;
-const W: u8 = 0 << 6;
-
-impl Register {
-    pub fn read_address(&self) -> u8 {
-        (*self as u8) | R
-    }
-
-    pub fn write_address(&self) -> u8 {
-        (*self as u8) | W
-    }
-}
-
 bitflags! {
     #[derive(Debug, Clone, Copy)]
     pub struct InterruptFlags: u32 {
