@@ -82,10 +82,8 @@ impl From<DirectCommand> for u8 {
     }
 }
 
-const C: u8 = (1 << 7) + (1 << 6);
-
 impl DirectCommand {
-    pub fn command_pattern(&self) -> u8 {
-        (*self as u8) | C
+    pub fn pattern(&self) -> u8 {
+        (*self as u8) | 0b1100_0000
     }
 }

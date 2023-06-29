@@ -815,9 +815,7 @@ where
         command: DirectCommand,
     ) -> Result<(), Error<SPI::Error, IRQ::Error>> {
         debug!("Executing command: {:?}", command);
-        self.spi
-            .write(&[command.command_pattern()])
-            .map_err(Error::Spi)
+        self.spi.write(&[command.pattern()]).map_err(Error::Spi)
     }
 
     pub fn write_register(
