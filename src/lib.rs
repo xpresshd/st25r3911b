@@ -8,7 +8,7 @@ use hal::digital::InputPin;
 use hal::spi;
 
 use command::Command;
-use register::{InterruptFlags, Register};
+use register::{Bitrate, InterruptFlags, OperationMode, Register};
 
 mod command;
 mod picc;
@@ -116,10 +116,20 @@ where
         debug!("New ST25R3911B driver instance");
         st25r3911b.initialize_chip()?;
 
-        st25r3911b.check_chip_id()?;
+        let silicon_rev = st25r3911b.check_chip_id()?;
+        defmt::info!("With silicon revision {=u8:x}", silicon_rev);
+
+        // Apply RF chip generic initialization
+        st25r3911b.modify_register(Register::OperationControlRegister, 0x30, 0x10)?; // default to AM
+        st25r3911b.modify_register(Register::IOConfiguration1, 0x07, 0x07)?; // MCUCLK: HF & LF clk off
+        st25r3911b.modify_register(Register::ReceiverConfigurationRegister4, 0x0f, 0x01)?; // increase digitizer window for PM
+        st25r3911b.modify_register(Register::AntennaCalibrationTargetRegister, 0xff, 0x80)?; // 90 degrees
+        st25r3911b.modify_register(Register::AntennaCalibrationControlRegister, 0xf8, 0x00)?; // trim value from calibrate antenna
+        st25r3911b.modify_register(Register::AMModulationDepthControlRegister, 1 << 7, 1 << 7)?; // AM modulated level is defined by RFO AM Modulated Level Def Reg, fixed setting, no automatic adjustment
+        st25r3911b.modify_register(Register::ExternalFieldDetectorThresholdRegister, 0x7f, 0)?;
 
         // Set FIFO Water Levels to be used
-        st25r3911b.modify_register(Register::IOConfiguration1, 0, 0b0011_0000)?;
+        st25r3911b.modify_register(Register::IOConfiguration1, 0b0011_0000, 0)?;
 
         // Always have CRC in FIFO upon reception and Enable External Field Detector
         st25r3911b.modify_register(Register::AuxiliaryRegister, 0, 1 << 6 | 1 << 4)?;
@@ -134,8 +144,8 @@ where
         self.reset()?;
         // Set Operation Control Register to default value
         self.write_register(Register::OperationControlRegister, 0)?;
-        // Set power supply 3.3V and enable pull downs on miso line
-        self.write_register(Register::IOConfiguration2, 0b1001_1000)?;
+        // Enable pull downs on miso line
+        self.write_register(Register::IOConfiguration2, 0b0001_1000)?;
 
         // after reset all interrupts are enabled. so disable them at first
         self.disable_interrupts(InterruptFlags::MASK_ALL)?;
@@ -148,30 +158,50 @@ where
         self.wait_for_interrupt(InterruptFlags::OSCILLATOR_FREQUENCY_STABLE, 10)?;
         self.disable_interrupts(InterruptFlags::OSCILLATOR_FREQUENCY_STABLE)?;
 
+        // TODO: either let user specify or measure with `MeasurePowerSupply` direct command.
+        // Set power supply voltage range
+        // self.modify_register(Register::IOConfiguration2, 1 << 7, ...)?;
+
         // Make sure Transmitter and Receiver are disabled
         self.modify_register(Register::OperationControlRegister, 1 << 6 | 1 << 3, 0)?;
-
-        // Set NFC to ISO14443A initiator
-        self.write_register(Register::ModeDefinitionRegister, 1 << 3)?;
-
-        // Set bit rate to 106 kbits/s
-        self.write_register(Register::BitRateDefinitionRegister, 0)?;
-
-        // Presets RX and TX configuration
-        self.execute_command(Command::AnalogPreset)?;
-
-        self.check_chip_id()?;
 
         Ok(())
     }
 
-    fn check_chip_id(&mut self) -> Result<(), Error<SPI::Error, IRQ::Error>> {
+    /// Configure reader for use in ISO14443A mode
+    pub fn iso14443a(&mut self) -> Result<(), Error<SPI::Error, IRQ::Error>> {
+        // Disable wake-up mode
+        self.modify_register(Register::OperationControlRegister, 1 << 2, 0)?;
+        // Enable ISO14443A
+        self.set_mode(OperationMode::PollNFCA)?;
+        // Used for 848 TX: very high AM to keep wave shapes
+        self.modify_register(Register::RFOAMModulatedLevelDefinitionRegister, 0xff, 0xf0)?;
+        // Set gain reduction/boost of first stage for AM & PM channel
+        self.modify_register(Register::ReceiverConfigurationRegister3, 0xff, 0x18)?;
+        // Increase digitizer window for AM
+        self.modify_register(Register::ReceiverConfigurationRegister4, 0xf0, 0x20)?;
+        // Turn off rx_tol
+        self.modify_register(Register::AuxiliaryRegister, 1 << 2, 0x00)?;
+
+        // Set bit rate to 106 kbits/s
+        self.set_bitrate(Bitrate::Kb106, Bitrate::Kb106)?;
+
+        // OOK
+        self.modify_register(Register::AuxiliaryRegister, 1 << 5, 0x00)?;
+        self.modify_register(Register::ReceiverConfigurationRegister1, 0x7f, 0x00)?;
+
+        Ok(())
+    }
+
+    /// Read the IC identity register and verify this is a ST25R3911B.
+    /// Returns the silicon revision or an `InvalidDevice` error.
+    pub fn check_chip_id(&mut self) -> Result<u8, Error<SPI::Error, IRQ::Error>> {
         let identity = self.read_register(Register::ICIdentity)?;
 
-        if identity & 0b11111000 != 8 {
+        if identity & 0b1111_1000 != 8 {
             return Err(Error::InvalidDevice);
         }
-        Ok(())
+        Ok(identity & 0b0000_0111)
     }
 
     fn calibrate(&mut self) -> Result<(), Error<SPI::Error, IRQ::Error>> {
@@ -206,6 +236,45 @@ where
         self.execute_command(Command::SetDefault)
     }
 
+    fn set_mode(&mut self, mode: OperationMode) -> Result<(), Error<SPI::Error, IRQ::Error>> {
+        let reg_val = match mode {
+            OperationMode::PollNFCA => 0b0000_1000,
+            OperationMode::PollNFCB => 0b0001_0000,
+            OperationMode::PollNFCF => 0b0001_1000,
+            OperationMode::PollTopaz => 0b0010_0000,
+            OperationMode::PollActiveP2P => 0b0000_0001,
+            OperationMode::ListenActiveP2P => 0b1000_1001,
+        };
+
+        self.write_register(Register::ModeDefinitionRegister, reg_val)
+    }
+
+    fn set_bitrate(
+        &mut self,
+        tx_bitrate: Bitrate,
+        rx_bitrate: Bitrate,
+    ) -> Result<(), Error<SPI::Error, IRQ::Error>> {
+        let tx_val = match tx_bitrate {
+            Bitrate::Kb106 => 0b0000_0000,
+            Bitrate::Kb212 => 0b0001_0000,
+            Bitrate::Kb424 => 0b0010_0000,
+            Bitrate::Kb848 => 0b0011_0000,
+            Bitrate::Kb1695 => 0b0100_0000,
+            Bitrate::Kb3390 => 0b0101_0000,
+            Bitrate::Kb6780 => 0b0110_0000,
+        };
+        let rx_val = match rx_bitrate {
+            Bitrate::Kb106 => 0b0000_0000,
+            Bitrate::Kb212 => 0b0000_0001,
+            Bitrate::Kb424 => 0b0000_0010,
+            Bitrate::Kb848 => 0b0000_0011,
+            Bitrate::Kb1695 => 0b0000_0100,
+            Bitrate::Kb3390 => 0b0000_0101,
+            Bitrate::Kb6780 => 0b0000_0110,
+        };
+
+        self.write_register(Register::BitRateDefinitionRegister, tx_val | rx_val)
+    }
     pub fn field_on(&mut self) -> Result<(), Error<SPI::Error, IRQ::Error>> {
         // set recommended threshold
         self.modify_register(Register::ExternalFieldDetectorThresholdRegister, 0x0F, 0x07)?;
@@ -257,6 +326,7 @@ where
 
         self.process_reqa_wupa(Command::TransmitWUPA)
     }
+
     /// Sends a REQuest type A to nearby PICCs
     pub fn reqa(&mut self) -> Result<Option<AtqA>, Error<SPI::Error, IRQ::Error>> {
         debug!("reqa");
