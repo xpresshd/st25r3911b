@@ -156,14 +156,16 @@ where
         // Make sure Transmitter and Receiver are disabled
         self.modify_register(Register::OperationControlRegister, 1 << 6 | 1 << 3, 0)?;
 
-        // Set NFC to ISO14443A initiator
+        Ok(())
+    }
+
+    /// Configure reader for use in ISO14443A mode
+    pub fn iso14443a(&mut self) -> Result<(), Error<SPI::Error, IRQ::Error>> {
+        // Enable ISO14443A
         self.set_mode(OperationMode::PollNFCA)?;
 
         // Set bit rate to 106 kbits/s
         self.set_bitrate(Bitrate::Kb106, Bitrate::Kb106)?;
-
-        // Presets RX and TX configuration
-        self.execute_command(Command::AnalogPreset)?;
 
         Ok(())
     }
