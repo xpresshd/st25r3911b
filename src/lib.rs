@@ -119,8 +119,17 @@ where
         let silicon_rev = st25r3911b.check_chip_id()?;
         defmt::info!("With silicon revision {=u8:x}", silicon_rev);
 
+        // Apply RF chip generic initialization
+        st25r3911b.modify_register(Register::OperationControlRegister, 0x30, 0x10)?; // default to AM
+        st25r3911b.modify_register(Register::IOConfiguration1, 0x07, 0x07)?; // MCUCLK: HF & LF clk off
+        st25r3911b.modify_register(Register::ReceiverConfigurationRegister4, 0x0f, 0x01)?; // increase digitizer window for PM
+        st25r3911b.modify_register(Register::AntennaCalibrationTargetRegister, 0xff, 0x80)?; // 90 degrees
+        st25r3911b.modify_register(Register::AntennaCalibrationControlRegister, 0xf8, 0x00)?; // trim value from calibrate antenna
+        st25r3911b.modify_register(Register::AMModulationDepthControlRegister, 1 << 7, 1 << 7)?; // AM modulated level is defined by RFO AM Modulated Level Def Reg, fixed setting, no automatic adjustment
+        st25r3911b.modify_register(Register::ExternalFieldDetectorThresholdRegister, 0x7f, 0)?;
+
         // Set FIFO Water Levels to be used
-        st25r3911b.modify_register(Register::IOConfiguration1, 0, 0b0011_0000)?;
+        st25r3911b.modify_register(Register::IOConfiguration1, 0b0011_0000, 0)?;
 
         // Always have CRC in FIFO upon reception and Enable External Field Detector
         st25r3911b.modify_register(Register::AuxiliaryRegister, 0, 1 << 6 | 1 << 4)?;
@@ -161,11 +170,25 @@ where
 
     /// Configure reader for use in ISO14443A mode
     pub fn iso14443a(&mut self) -> Result<(), Error<SPI::Error, IRQ::Error>> {
+        // Disable wake-up mode
+        self.modify_register(Register::OperationControlRegister, 1 << 2, 0)?;
         // Enable ISO14443A
         self.set_mode(OperationMode::PollNFCA)?;
+        // Used for 848 TX: very high AM to keep wave shapes
+        self.modify_register(Register::RFOAMModulatedLevelDefinitionRegister, 0xff, 0xf0)?;
+        // Set gain reduction/boost of first stage for AM & PM channel
+        self.modify_register(Register::ReceiverConfigurationRegister3, 0xff, 0x18)?;
+        // Increase digitizer window for AM
+        self.modify_register(Register::ReceiverConfigurationRegister4, 0xf0, 0x20)?;
+        // Turn off rx_tol
+        self.modify_register(Register::AuxiliaryRegister, 1 << 2, 0x00)?;
 
         // Set bit rate to 106 kbits/s
         self.set_bitrate(Bitrate::Kb106, Bitrate::Kb106)?;
+
+        // OOK
+        self.modify_register(Register::AuxiliaryRegister, 1 << 5, 0x00)?;
+        self.modify_register(Register::ReceiverConfigurationRegister1, 0x7f, 0x00)?;
 
         Ok(())
     }
