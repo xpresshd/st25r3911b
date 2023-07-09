@@ -379,8 +379,8 @@ where
             | InterruptFlags::GENERAL_TIMER_EXPIRE
             | InterruptFlags::CRC_ERROR
             | InterruptFlags::PARITY_ERROR
-            | InterruptFlags::SOFT_FARMING_ERROR
-            | InterruptFlags::HARD_FARMING_ERROR;
+            | InterruptFlags::SOFT_FRAMING_ERROR
+            | InterruptFlags::HARD_FRAMING_ERROR;
 
         // Enable TX and RX interrupts
         self.enable_interrupts(interrupt_flags)?;
@@ -419,10 +419,10 @@ where
         }
 
         // Error check part
-        if intr.contains(InterruptFlags::HARD_FARMING_ERROR)
-            || intr.contains(InterruptFlags::SOFT_FARMING_ERROR)
+        if intr.contains(InterruptFlags::HARD_FRAMING_ERROR)
+            || intr.contains(InterruptFlags::SOFT_FRAMING_ERROR)
         {
-            return Err(Error::FarmingError);
+            return Err(Error::FramingError);
         }
         if intr.contains(InterruptFlags::PARITY_ERROR) {
             return Err(Error::ParityError);
@@ -441,7 +441,7 @@ where
 
         // Check if the reception ends with missing parity bit
         if fifo_reg2 & (1 << 0) != 0 {
-            return Err(Error::FarmingError);
+            return Err(Error::FramingError);
         }
 
         // Read data

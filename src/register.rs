@@ -124,8 +124,8 @@ bitflags! {
         const WAKE_UP_PHASE_MEASUREMENT = 0b0000_0010 << 16;
         const WAKE_UP_AMPLITUDE_MEASUREMENT = 0b0000_0100 << 16;
         const WAKE_UP_TIMER_INTERRUPT = 0b0000_1000 << 16;
-        const HARD_FARMING_ERROR = 0b0001_0000 << 16;
-        const SOFT_FARMING_ERROR = 0b0010_0000 << 16;
+        const HARD_FRAMING_ERROR = 0b0001_0000 << 16;
+        const SOFT_FRAMING_ERROR = 0b0010_0000 << 16;
         const PARITY_ERROR = 0b0100_0000 << 16;
         const CRC_ERROR = 0b1000_0000 << 16;
     }

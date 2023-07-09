@@ -14,7 +14,7 @@ pub enum Error<SPIE, GPIOE> {
 
     LinkLoss,
     IOError,
-    FarmingError,
+    FramingError,
     CRCError,
     ParityError,
     FifoIncompleteByte,
@@ -37,7 +37,7 @@ impl<SPIE, GPIOE> defmt::Format for Error<SPIE, GPIOE> {
             Error::FailedToTurnOnField => defmt::write!(f, "Error::FailedToTurnOnField"),
             Error::LinkLoss => defmt::write!(f, "Error::LinkLoss"),
             Error::IOError => defmt::write!(f, "Error::IOError"),
-            Error::FarmingError => defmt::write!(f, "Error::FarmingError"),
+            Error::FramingError => defmt::write!(f, "Error::FramingError"),
             Error::CRCError => defmt::write!(f, "Error::CRCError"),
             Error::ParityError => defmt::write!(f, "Error::ParityError"),
             Error::FifoIncompleteByte => defmt::write!(f, "Error::FifoIncompleteByte"),
