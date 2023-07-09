@@ -1,11 +1,11 @@
 use crate::register::Register;
 
+/// An instruction to the reader to perform a certain action.
+/// This operation is a single-byte value starting with two leading '1' bits (`0b11xx_xxxx`).
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[repr(u8)]
-/// An instruction to the reader to perform a certain action.
-/// This operation is a single-byte value starting with two leading '1' bits (`0b11xx_xxxx`).
 pub enum DirectCommand {
     /// Puts the st25r3911b in default state (same as after power-up)
     SetDefault = 0xC1,
@@ -77,6 +77,7 @@ pub enum DirectCommand {
     /// Enable/W to test registers
     TestAccess = 0xFC,
 }
+
 impl From<DirectCommand> for u8 {
     #[inline(always)]
     fn from(variant: DirectCommand) -> Self {
@@ -92,10 +93,10 @@ impl DirectCommand {
 }
 
 
-#[derive(Debug, Clone, Copy)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 /// An operation performed on one of the registers.
 /// This operation starts with a leading '0' bit (`0b0xxx_xxxx`).
+#[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum RegisterOperation {
     /// Set the value of a register
     Write(Register),
@@ -113,11 +114,11 @@ impl RegisterOperation {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 /// An operation performed on the 96-byte FIFO,
 /// which contains the data received from the picc or to be transmitted to the picc.
 /// This operation starts with leading '10' bits (`0b10xx_xxxx`).
+#[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum FifoOperation {
     /// Write one or more bytes to the FIFO
     Load,
