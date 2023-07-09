@@ -14,6 +14,9 @@ mod command;
 mod picc;
 mod register;
 
+pub mod error;
+use error::Error;
+
 /// Answer To reQuest A
 pub struct AtqA {
     pub bytes: [u8; 2],
@@ -895,29 +898,4 @@ where
 
         Err(Error::InterruptTimeout)
     }
-}
-
-#[derive(Debug)]
-pub enum Error<SPIE, GPIOE> {
-    Spi(SPIE),
-    InterruptPin(GPIOE),
-
-    /// Set when Calibrate antenna sequence was not able to adjust resonance
-    AntennaCalibration,
-
-    InterruptTimeout,
-    InvalidDevice,
-    FailedToTurnOnField,
-
-    LinkLoss,
-    IOError,
-    FarmingError,
-    CRCError,
-    ParityError,
-    FifoIncompleteByte,
-    FifoNoRoom,
-    Collision,
-    AntiCollisionMaxLoopsReached,
-    Timeout,
-    Nak,
 }
