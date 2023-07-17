@@ -7,12 +7,15 @@ use hal::delay;
 use hal::digital::InputPin;
 use hal::spi;
 
-use command::Command;
+use command::{DirectCommand, FifoOperation, RegisterOperation};
 use register::{Bitrate, InterruptFlags, OperationMode, Register};
 
 mod command;
 mod picc;
 mod register;
+
+pub mod error;
+pub use error::Error;
 
 /// Answer To reQuest A
 pub struct AtqA {
@@ -146,17 +149,8 @@ where
         let silicon_rev = self.check_chip_id()?;
         defmt::info!("With silicon revision {=u8:x}", silicon_rev);
 
-        // Apply RF chip generic initialization
-        self.modify_register(Register::OperationControlRegister, 0x30, 0x10)?; // default to AM
-        self.modify_register(Register::IOConfiguration1, 0x07, 0x07)?; // MCUCLK: HF & LF clk off
-        self.modify_register(Register::ReceiverConfigurationRegister4, 0x0f, 0x01)?; // increase digitizer window for PM
-        self.modify_register(Register::AntennaCalibrationTargetRegister, 0xff, 0x80)?; // 90 degrees
-        self.modify_register(Register::AntennaCalibrationControlRegister, 0xf8, 0x00)?; // trim value from calibrate antenna
-        self.modify_register(Register::AMModulationDepthControlRegister, 1 << 7, 1 << 7)?; // AM modulated level is defined by RFO AM Modulated Level Def Reg, fixed setting, no automatic adjustment
-        self.modify_register(Register::ExternalFieldDetectorThresholdRegister, 0x7f, 0)?;
-
         // Set FIFO Water Levels to be used
-        self.modify_register(Register::IOConfiguration1, 0b0011_0000, 0)?;
+        self.modify_register(Register::IOConfiguration1, 0, 0b0011_0000)?;
 
         // Always have CRC in FIFO upon reception and Enable External Field Detector
         self.modify_register(Register::AuxiliaryRegister, 0, 1 << 6 | 1 << 4)?;
@@ -168,25 +162,14 @@ where
 
     /// Configure reader for use in ISO14443A mode
     pub fn iso14443a(&mut self) -> Result<(), Error<SPI::Error, IRQ::Error>> {
-        // Disable wake-up mode
-        self.modify_register(Register::OperationControlRegister, 1 << 2, 0)?;
         // Enable ISO14443A
         self.set_mode(OperationMode::PollNFCA)?;
-        // Used for 848 TX: very high AM to keep wave shapes
-        self.modify_register(Register::RFOAMModulatedLevelDefinitionRegister, 0xff, 0xf0)?;
-        // Set gain reduction/boost of first stage for AM & PM channel
-        self.modify_register(Register::ReceiverConfigurationRegister3, 0xff, 0x18)?;
-        // Increase digitizer window for AM
-        self.modify_register(Register::ReceiverConfigurationRegister4, 0xf0, 0x20)?;
-        // Turn off rx_tol
-        self.modify_register(Register::AuxiliaryRegister, 1 << 2, 0x00)?;
 
         // Set bit rate to 106 kbits/s
         self.set_bitrate(Bitrate::Kb106, Bitrate::Kb106)?;
 
-        // OOK
-        self.modify_register(Register::AuxiliaryRegister, 1 << 5, 0x00)?;
-        self.modify_register(Register::ReceiverConfigurationRegister1, 0x7f, 0x00)?;
+        // Presets RX and TX configuration
+        self.direct_command(DirectCommand::AnalogPreset)?;
 
         Ok(())
     }
@@ -221,17 +204,17 @@ where
         self.modify_register(Register::RegulatorVoltageControlRegister, 0, 1 << 7)?;
         self.modify_register(Register::RegulatorVoltageControlRegister, 1 << 7, 0)?;
 
-        self.execute_command(Command::AdjustRegulators)?;
+        self.direct_command(DirectCommand::AdjustRegulators)?;
         Ok(())
     }
 
     fn calibrate_antenna(&mut self) -> Result<(), Error<SPI::Error, IRQ::Error>> {
-        self.execute_command(Command::CalibrateAntenna)?;
+        self.direct_command(DirectCommand::CalibrateAntenna)?;
         Ok(())
     }
 
     pub fn reset(&mut self) -> Result<(), Error<SPI::Error, IRQ::Error>> {
-        self.execute_command(Command::SetDefault)
+        self.direct_command(DirectCommand::SetDefault)
     }
 
     fn set_mode(&mut self, mode: OperationMode) -> Result<(), Error<SPI::Error, IRQ::Error>> {
@@ -273,6 +256,7 @@ where
 
         self.write_register(Register::BitRateDefinitionRegister, tx_val | rx_val)
     }
+
     pub fn field_on(&mut self) -> Result<(), Error<SPI::Error, IRQ::Error>> {
         // set recommended threshold
         self.modify_register(Register::ExternalFieldDetectorThresholdRegister, 0x0F, 0x07)?;
@@ -285,7 +269,7 @@ where
             InterruptFlags::FIELD_COLLISION_DETECTED | InterruptFlags::MINIMUM_GUARD_TIME_EXPIRE;
 
         self.enable_interrupts(intr_flags)?;
-        self.execute_command(Command::NFCInitialFieldOn)?;
+        self.direct_command(DirectCommand::NFCInitialFieldOn)?;
         let intr_res = self.wait_for_interrupt(intr_flags, 10);
         self.disable_interrupts(intr_flags)?;
 
@@ -322,19 +306,19 @@ where
     pub fn wupa(&mut self) -> Result<Option<AtqA>, Error<SPI::Error, IRQ::Error>> {
         debug!("wupa");
 
-        self.process_reqa_wupa(Command::TransmitWUPA)
+        self.process_reqa_wupa(DirectCommand::TransmitWUPA)
     }
 
     /// Sends a REQuest type A to nearby PICCs
     pub fn reqa(&mut self) -> Result<Option<AtqA>, Error<SPI::Error, IRQ::Error>> {
         debug!("reqa");
 
-        self.process_reqa_wupa(Command::TransmitREQA)
+        self.process_reqa_wupa(DirectCommand::TransmitREQA)
     }
 
     fn process_reqa_wupa(
         &mut self,
-        cmd: Command,
+        cmd: DirectCommand,
     ) -> Result<Option<AtqA>, Error<SPI::Error, IRQ::Error>> {
         debug!("reqa");
 
@@ -375,12 +359,12 @@ where
             0,
         )?;
         // Clear FIFO
-        self.execute_command(Command::Clear)?;
+        self.direct_command(DirectCommand::Clear)?;
         // Disable all interrupts
         self.disable_interrupts(InterruptFlags::MASK_ALL)?;
         self.clear_interrupts()?;
         // Reset RX Gain
-        self.execute_command(Command::ResetRxGain)?;
+        self.direct_command(DirectCommand::ResetRxGain)?;
         // End prepare transmission
 
         let interrupt_flags = InterruptFlags::START_OF_RECEIVE
@@ -393,8 +377,8 @@ where
             | InterruptFlags::GENERAL_TIMER_EXPIRE
             | InterruptFlags::CRC_ERROR
             | InterruptFlags::PARITY_ERROR
-            | InterruptFlags::SOFT_FARMING_ERROR
-            | InterruptFlags::HARD_FARMING_ERROR;
+            | InterruptFlags::SOFT_FRAMING_ERROR
+            | InterruptFlags::HARD_FRAMING_ERROR;
 
         // Enable TX and RX interrupts
         self.enable_interrupts(interrupt_flags)?;
@@ -402,7 +386,7 @@ where
         // Clear nbtx bits before sending WUPA/REQA - otherwise ST25R3911 will report parity error
         self.write_register(Register::NumberOfTransmittedBytesRegister2, 0)?;
 
-        self.execute_command(cmd)?;
+        self.direct_command(cmd)?;
 
         let intr_res = self.wait_for_interrupt(interrupt_flags, 2);
         self.disable_interrupts(interrupt_flags)?;
@@ -433,10 +417,10 @@ where
         }
 
         // Error check part
-        if intr.contains(InterruptFlags::HARD_FARMING_ERROR)
-            || intr.contains(InterruptFlags::SOFT_FARMING_ERROR)
+        if intr.contains(InterruptFlags::HARD_FRAMING_ERROR)
+            || intr.contains(InterruptFlags::SOFT_FRAMING_ERROR)
         {
-            return Err(Error::FarmingError);
+            return Err(Error::FramingError);
         }
         if intr.contains(InterruptFlags::PARITY_ERROR) {
             return Err(Error::ParityError);
@@ -455,7 +439,7 @@ where
 
         // Check if the reception ends with missing parity bit
         if fifo_reg2 & (1 << 0) != 0 {
-            return Err(Error::FarmingError);
+            return Err(Error::FramingError);
         }
 
         // Read data
@@ -518,12 +502,12 @@ where
             0,
         )?;
         // Clear FIFO
-        self.execute_command(Command::Clear)?;
+        self.direct_command(DirectCommand::Clear)?;
         // Disable all interrupts
         self.disable_interrupts(InterruptFlags::MASK_ALL)?;
         self.clear_interrupts()?;
         // Reset RX Gain
-        self.execute_command(Command::ResetRxGain)?;
+        self.direct_command(DirectCommand::ResetRxGain)?;
 
         let interrupt_flags = InterruptFlags::END_OF_TRANSMISSION
             | InterruptFlags::BIT_COLLISION
@@ -556,10 +540,10 @@ where
 
         match without_crc {
             true => {
-                self.execute_command(Command::TransmitWithoutCRC)?;
+                self.direct_command(DirectCommand::TransmitWithoutCRC)?;
             }
             false => {
-                self.execute_command(Command::TransmitWithCRC)?;
+                self.direct_command(DirectCommand::TransmitWithCRC)?;
             }
         }
         let intr_res = self.wait_for_interrupt(interrupt_flags, 2);
@@ -824,14 +808,13 @@ where
         Ok(())
     }
 
-    pub fn execute_command(
+    /// Execute a *direct command*
+    pub fn direct_command(
         &mut self,
-        command: Command,
+        command: DirectCommand,
     ) -> Result<(), Error<SPI::Error, IRQ::Error>> {
         debug!("Executing command: {:?}", command);
-        self.spi
-            .write(&[command.command_pattern()])
-            .map_err(Error::Spi)
+        self.spi.write(&[command.pattern()]).map_err(Error::Spi)
     }
 
     pub fn write_register(
@@ -841,12 +824,12 @@ where
     ) -> Result<(), Error<SPI::Error, IRQ::Error>> {
         debug!("Write register {:?} value: 0b{:08b}", reg, val);
         self.spi
-            .write(&[reg.write_address(), val])
+            .write(&[RegisterOperation::Write(reg).pattern(), val])
             .map_err(Error::Spi)
     }
 
     pub fn read_register(&mut self, reg: Register) -> Result<u8, Error<SPI::Error, IRQ::Error>> {
-        let address = [reg.read_address()];
+        let address = [RegisterOperation::Read(reg).pattern()];
         let mut value = [0];
 
         let mut operations = [
@@ -858,7 +841,7 @@ where
     }
 
     pub fn read_interrupts(&mut self) -> Result<u32, Error<SPI::Error, IRQ::Error>> {
-        let address = [Register::MainInterruptRegister.read_address()];
+        let address = [RegisterOperation::Read(Register::MainInterruptRegister).pattern()];
         let mut value = [0, 0, 0];
 
         let mut operations = [
@@ -880,7 +863,7 @@ where
         &mut self,
         buffer: &'b mut [u8],
     ) -> Result<&'b [u8], Error<SPI::Error, IRQ::Error>> {
-        let fifo_cmd = [0b10111111];
+        let fifo_cmd = [FifoOperation::Read.pattern()];
         let mut operations = [
             spi::Operation::Write(&fifo_cmd),
             spi::Operation::Read(buffer),
@@ -891,7 +874,7 @@ where
 
     fn write_fifo(&mut self, bytes: &[u8]) -> Result<(), Error<SPI::Error, IRQ::Error>> {
         debug!("Write in fifo: {=[?]:x}", bytes);
-        let fifo_cmd = [0b10000000];
+        let fifo_cmd = [FifoOperation::Load.pattern()];
         let mut operations = [
             spi::Operation::Write(&fifo_cmd),
             spi::Operation::Write(bytes),
@@ -925,29 +908,4 @@ where
 
         Err(Error::InterruptTimeout)
     }
-}
-
-#[derive(Debug)]
-pub enum Error<SPIE, GPIOE> {
-    Spi(SPIE),
-    InterruptPin(GPIOE),
-
-    /// Set when Calibrate antenna sequence was not able to adjust resonance
-    AntennaCalibration,
-
-    InterruptTimeout,
-    InvalidDevice,
-    FailedToTurnOnField,
-
-    LinkLoss,
-    IOError,
-    FarmingError,
-    CRCError,
-    ParityError,
-    FifoIncompleteByte,
-    FifoNoRoom,
-    Collision,
-    AntiCollisionMaxLoopsReached,
-    Timeout,
-    Nak,
 }
