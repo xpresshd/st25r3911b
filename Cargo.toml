@@ -9,7 +9,7 @@ keywords = ["rfid", "st25r3911b", "embedded-hal"]
 categories = ["embedded", "hardware-support", "no-std"]
 
 [dependencies]
-embedded-hal = "=1.0.0-alpha.11"
+embedded-hal = "=1.0.0-alpha.10"
 bitflags = "2.3.2"
 defmt = { version = "0.3", optional = true }
 

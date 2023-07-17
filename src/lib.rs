@@ -15,14 +15,14 @@ mod picc;
 mod register;
 
 pub mod error;
-use error::Error;
+pub use error::Error;
 
 /// Answer To reQuest A
 pub struct AtqA {
     pub bytes: [u8; 2],
 }
 
-#[derive(Hash, Eq, PartialEq)]
+#[derive(Hash, Eq, PartialEq, Clone)]
 pub enum Uid {
     /// Single sized UID, 4 bytes long
     Single(GenericUid<4>),
@@ -42,7 +42,7 @@ impl Uid {
     }
 }
 
-#[derive(Hash, Eq, PartialEq)]
+#[derive(Hash, Eq, PartialEq, Clone)]
 pub struct GenericUid<const T: usize>
 where
     [u8; T]: Sized,
@@ -109,31 +109,18 @@ where
     IRQ: InputPin,
     DELAY: delay::DelayUs,
 {
-    pub fn new(spi: SPI, intr: IRQ, delay: DELAY) -> Result<Self, Error<SPI::Error, IRQ::Error>> {
-        let mut st25r3911b = Self {
+    pub fn new(spi: SPI, intr: IRQ, delay: DELAY) -> Self {
+         Self {
             spi,
             intr,
             delay,
             interrupt_mask: 0,
-        };
-        debug!("New ST25R3911B driver instance");
-        st25r3911b.initialize_chip()?;
-
-        let silicon_rev = st25r3911b.check_chip_id()?;
-        defmt::info!("With silicon revision {=u8:x}", silicon_rev);
-
-        // Set FIFO Water Levels to be used
-        st25r3911b.modify_register(Register::IOConfiguration1, 0, 0b0011_0000)?;
-
-        // Always have CRC in FIFO upon reception and Enable External Field Detector
-        st25r3911b.modify_register(Register::AuxiliaryRegister, 0, 1 << 6 | 1 << 4)?;
-
-        st25r3911b.calibrate()?;
-
-        Ok(st25r3911b)
+        }
     }
 
     pub fn initialize_chip(&mut self) -> Result<(), Error<SPI::Error, IRQ::Error>> {
+        debug!("New ST25R3911B driver instance");
+
         // reset
         self.reset()?;
         // Set Operation Control Register to default value
@@ -158,6 +145,17 @@ where
 
         // Make sure Transmitter and Receiver are disabled
         self.modify_register(Register::OperationControlRegister, 1 << 6 | 1 << 3, 0)?;
+
+        let silicon_rev = self.check_chip_id()?;
+        defmt::info!("With silicon revision {=u8:x}", silicon_rev);
+
+        // Set FIFO Water Levels to be used
+        self.modify_register(Register::IOConfiguration1, 0, 0b0011_0000)?;
+
+        // Always have CRC in FIFO upon reception and Enable External Field Detector
+        self.modify_register(Register::AuxiliaryRegister, 0, 1 << 6 | 1 << 4)?;
+
+        self.calibrate()?;
 
         Ok(())
     }
@@ -744,9 +742,7 @@ where
     }
 
     pub fn clear_interrupts(&mut self) -> Result<(), Error<SPI::Error, IRQ::Error>> {
-        self.read_register(Register::MainInterruptRegister)?;
-        self.read_register(Register::TimerAndNFCInterruptRegister)?;
-        self.read_register(Register::ErrorAndWakeUpInterruptRegister)?;
+        self.read_interrupts()?;
         Ok(())
     }
 
@@ -844,6 +840,25 @@ where
         Ok(value[0])
     }
 
+    pub fn read_interrupts(&mut self) -> Result<u32, Error<SPI::Error, IRQ::Error>> {
+        let address = [RegisterOperation::Read(Register::MainInterruptRegister).pattern()];
+        let mut value = [0, 0, 0];
+
+        let mut operations = [
+            spi::Operation::Write(&address),
+            spi::Operation::Read(&mut value),
+        ];
+        self.spi.transaction(&mut operations).map_err(Error::Spi)?;
+
+        let mut interrupt = 0;
+
+        interrupt |= value[0] as u32;
+        interrupt |= (value[1] as u32) << 8;
+        interrupt |= (value[2] as u32) << 16;
+
+        Ok(interrupt)
+    }
+
     fn read_fifo<'b>(
         &mut self,
         buffer: &'b mut [u8],
@@ -873,16 +888,11 @@ where
         timeout_in_ms: u16,
     ) -> Result<InterruptFlags, Error<SPI::Error, IRQ::Error>> {
         debug!("Wait for interrupt {}ms", timeout_in_ms);
-        let mut i = 0;
-        let mut interrupt = 0u32;
+        self.delay.delay_ms(1);
+        let mut i = 1;
         loop {
             if self.intr.is_high().map_err(Error::InterruptPin)? {
-                interrupt |= self.read_register(Register::MainInterruptRegister)? as u32;
-                interrupt |=
-                    (self.read_register(Register::TimerAndNFCInterruptRegister)? as u32) << 8;
-                interrupt |=
-                    (self.read_register(Register::ErrorAndWakeUpInterruptRegister)? as u32) << 16;
-
+                let interrupt = self.read_interrupts()?;
                 // Match any interrupt
                 if interrupt & mask.bits() > 0 {
                     return Ok(InterruptFlags::from_bits_truncate(interrupt));
