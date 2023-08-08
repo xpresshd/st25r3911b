@@ -78,9 +78,9 @@ impl<const L: usize> FifoData<L> {
     /// Copies FIFO data to destination buffer.
     /// Assumes the FIFO data is aligned properly to append directly to the current known bits.
     /// Returns the number of valid bits in the destination buffer after copy.
-    pub fn copy_bits_to(&self, dst: &mut [u8], dst_valid_bits: u8) -> u8 {
+    pub fn copy_bits_to(&self, dst: &mut [u8], dst_valid_bits: u8) -> Result<u8, ()> {
         if self.valid_bytes == 0 {
-            return dst_valid_bits;
+            return Ok(dst_valid_bits);
         }
         let dst_valid_bytes = dst_valid_bits / 8;
         let dst_valid_last_bits = dst_valid_bits % 8;
@@ -89,10 +89,13 @@ impl<const L: usize> FifoData<L> {
         dst[idx] = (self.buffer[0] & mask) | (dst[idx] & !mask);
         idx += 1;
         let len = self.valid_bytes - 1;
+        if (idx + len) > dst.len() {
+            return Err(())
+        }
         if len > 0 {
             dst[idx..idx + len].copy_from_slice(&self.buffer[1..=len]);
         }
-        dst_valid_bits + (len * 8) as u8 + self.valid_bits
+        Ok(dst_valid_bits + (len * 8) as u8 + self.valid_bits)
     }
 }
 
@@ -620,7 +623,7 @@ where
                     true,
                 ) {
                     Ok(fifo_data) => {
-                        fifo_data.copy_bits_to(&mut tx[2..=6], known_bits);
+                        fifo_data.copy_bits_to(&mut tx[2..=6], known_bits).map_err(Error::CopyOverflow)?;
                         debug!("Read full response {:?}", fifo_data);
                         break 'anticollision;
                     }
@@ -645,7 +648,7 @@ where
                         let fifo_data = self.fifo_data::<5>()?;
                         debug!("Read partial response {:?}", fifo_data);
 
-                        fifo_data.copy_bits_to(&mut tx[2..=6], known_bits);
+                        fifo_data.copy_bits_to(&mut tx[2..=6], known_bits).map_err(Error::CopyOverflow)?;
                         known_bits = coll_pos;
 
                         // Set the bit of collision position to 1
