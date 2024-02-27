@@ -107,7 +107,7 @@ impl<SPI, IRQ, DELAY> St25r3911b<SPI, IRQ, DELAY>
 where
     SPI: spi::SpiDevice,
     IRQ: InputPin,
-    DELAY: delay::DelayUs,
+    DELAY: delay::DelayNs,
 {
     pub fn new(spi: SPI, intr: IRQ, delay: DELAY) -> Self {
          Self {
