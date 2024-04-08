@@ -23,6 +23,7 @@ pub enum Error<SPIE, GPIOE> {
     AntiCollisionMaxLoopsReached,
     Timeout,
     Nak,
+    CopyOverflow(()),
 }
 
 #[cfg(feature = "defmt")]
@@ -48,6 +49,7 @@ impl<SPIE, GPIOE> defmt::Format for Error<SPIE, GPIOE> {
             }
             Error::Timeout => defmt::write!(f, "Error::Timeout"),
             Error::Nak => defmt::write!(f, "Error::Nak"),
+            Error::CopyOverflow(_) => defmt::write!(f, "Error::CopyOverflow"),
         };
     }
 }
